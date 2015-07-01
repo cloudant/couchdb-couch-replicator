@@ -107,7 +107,7 @@ should_cancel_replication(RepId, RepPid) ->
 compare_dbs(Source, Target, FilterFun) ->
     {ok, SourceDb} = couch_db:open_int(Source, []),
     {ok, TargetDb} = couch_db:open_int(Target, []),
-    Fun = fun(FullDocInfo, _, Acc) ->
+    Fun = fun(FullDocInfo, Acc) ->
         {ok, DocId, SourceDoc} = read_doc(SourceDb, FullDocInfo, ?LINE),
         case FilterFun(DocId, SourceDoc) of
             true ->
@@ -118,7 +118,7 @@ compare_dbs(Source, Target, FilterFun) ->
                 {ok, Acc}
         end
     end,
-    {ok, _, Acc} = couch_db:enum_docs(SourceDb, Fun, 0, []),
+    {ok, Acc} = couch_db:fold_docs(SourceDb, Fun, 0, []),
     ok = couch_db:close(SourceDb),
     ok = couch_db:close(TargetDb),
     Acc.

@@ -59,11 +59,12 @@
 db_uri(#httpdb{url = Url}) ->
     couch_util:url_strip_password(Url);
 
-db_uri(#db{name = Name}) ->
-    db_uri(Name);
+db_uri(DbName)  when is_binary(DbName) ->
+    ?b2l(DbName);
 
-db_uri(DbName) ->
-    ?b2l(DbName).
+db_uri(Db) ->
+    true = couch_db:is_db(Db),
+    db_uri(couch_db:name(Db)).
 
 
 db_open(Db, Options) ->
@@ -148,11 +149,17 @@ get_db_info(#httpdb{} = Db) ->
         fun(200, _, {Props}) ->
             {ok, Props}
         end);
-get_db_info(#db{name = DbName, user_ctx = UserCtx}) ->
-    {ok, Db} = couch_db:open(DbName, [{user_ctx, UserCtx}]),
-    {ok, Info} = couch_db:get_db_info(Db),
-    couch_db:close(Db),
-    {ok, [{couch_util:to_binary(K), V} || {K, V} <- Info]}.
+get_db_info(Db) ->
+    true = couch_db:is_db(Db),
+    DbName = couch_db:name(Db),
+    UserCtx = couch_db:get_user_ctx(Db),
+    {ok, TmpDb} = couch_db:open(DbName, [{user_ctx, UserCtx}]),
+    try
+        {ok, Info} = couch_db:get_db_info(TmpDb),
+        {ok, [{couch_util:to_binary(K), V} || {K, V} <- Info]}
+    after
+        couch_db:close(TmpDb)
+    end.
 
 
 get_pending_count(#httpdb{} = Db, Seq) when is_number(Seq) ->
@@ -171,11 +178,16 @@ get_pending_count(#httpdb{} = Db, Seq) ->
     send_req(Db, Options, fun(200, _, {Props}) ->
         {ok, couch_util:get_value(<<"pending">>, Props, null)}
     end);
-get_pending_count(#db{name=DbName}=Db, Seq) when is_number(Seq) ->
-    {ok, CountDb} = couch_db:open(DbName, [{user_ctx, Db#db.user_ctx}]),
-    Pending = couch_db:count_changes_since(CountDb, Seq),
-    couch_db:close(CountDb),
-    {ok, Pending}.
+get_pending_count(Db, Seq) when is_number(Seq) ->
+    true = couch_db:is_db(Db),
+    DbName = couch_db:name(Db),
+    UserCtx = couch_db:get_user_ctx(Db),
+    {ok, TmpDb} = couch_db:open(DbName, [{user_ctx, UserCtx}]),
+    try
+        {ok, couch_db:count_changes_since(TmpDb, Seq)}
+    after
+        couch_db:close(TmpDb)
+    end.
 
 get_view_info(#httpdb{} = Db, DDocId, ViewName) ->
     Path = iolist_to_binary([DDocId, "/_view/", ViewName, "/_info"]),
@@ -183,7 +195,8 @@ get_view_info(#httpdb{} = Db, DDocId, ViewName) ->
         fun(200, _, {Props}) ->
             {ok, Props}
         end);
-get_view_info(#db{name = DbName}, DDocId, ViewName) ->
+get_view_info(Db, DDocId, ViewName) ->
+    DbName = couch_db:name(Db),
     couch_mrview:get_view_info(DbName, DDocId, ViewName).
 
 

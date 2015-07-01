@@ -806,7 +806,8 @@ state_after_error(#rep_state{retries_left = Left, wait = Wait} = State) ->
 
 before_doc_update(#doc{id = <<?DESIGN_DOC_PREFIX, _/binary>>} = Doc, _Db) ->
     Doc;
-before_doc_update(#doc{body = {Body}} = Doc, #db{user_ctx=UserCtx} = Db) ->
+before_doc_update(#doc{body = {Body}} = Doc, Db) ->
+    UserCtx = couch_db:get_user_ctx(Db),
     #user_ctx{roles = Roles, name = Name} = UserCtx,
     case lists:member(<<"_replicator">>, Roles) of
     true ->
@@ -833,7 +834,8 @@ before_doc_update(#doc{body = {Body}} = Doc, #db{user_ctx=UserCtx} = Db) ->
 
 after_doc_read(#doc{id = <<?DESIGN_DOC_PREFIX, _/binary>>} = Doc, _Db) ->
     Doc;
-after_doc_read(#doc{body = {Body}} = Doc, #db{user_ctx=UserCtx} = Db) ->
+after_doc_read(#doc{body = {Body}} = Doc, Db) ->
+    UserCtx = couch_db:get_user_ctx(Db),
     #user_ctx{name = Name} = UserCtx,
     case (catch couch_db:check_is_admin(Db)) of
     ok ->
