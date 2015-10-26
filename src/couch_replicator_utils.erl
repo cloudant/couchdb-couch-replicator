@@ -387,8 +387,8 @@ open_db(Db) ->
     true = couch_db:is_db(Db),
     Name = couch_db:name(Db),
     UserCtx = couch_db:get_user_ctx(Db),
-    {ok, Db} = couch_db:open(Name, [{user_ctx, UserCtx}]),
-    Db.
+    {ok, NewDb} = couch_db:open(Name, [{user_ctx, UserCtx}]),
+    NewDb.
 
 
 close_db(#httpdb{}) ->

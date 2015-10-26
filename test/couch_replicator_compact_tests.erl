@@ -83,8 +83,8 @@ should_all_processes_be_alive(RepPid, Source, Target) ->
         {ok, SourceDb} = reopen_db(Source),
         {ok, TargetDb} = reopen_db(Target),
         ?assert(is_process_alive(RepPid)),
-        ?assert(is_process_alive(SourceDb#db.main_pid)),
-        ?assert(is_process_alive(TargetDb#db.main_pid))
+        ?assert(is_process_alive(couch_db:pid(SourceDb))),
+        ?assert(is_process_alive(couch_db:pid(TargetDb)))
     end).
 
 should_run_replication(RepPid, RepId, Source, Target) ->
@@ -150,12 +150,12 @@ should_populate_and_compact(RepPid, Source, Target, BatchSize, Rounds) ->
 
                 compact_db("source", SourceDb),
                 ?assert(is_process_alive(RepPid)),
-                ?assert(is_process_alive(SourceDb#db.main_pid)),
+                ?assert(is_process_alive(couch_db:pid(SourceDb))),
                 wait_for_compaction("source", SourceDb),
 
                 compact_db("target", TargetDb),
                 ?assert(is_process_alive(RepPid)),
-                ?assert(is_process_alive(TargetDb#db.main_pid)),
+                ?assert(is_process_alive(couch_db:pid(TargetDb))),
                 wait_for_compaction("target", TargetDb),
 
                 {ok, SourceDb2} = reopen_db(SourceDb),
@@ -166,14 +166,14 @@ should_populate_and_compact(RepPid, Source, Target, BatchSize, Rounds) ->
 
                 compact_db("source", SourceDb2),
                 ?assert(is_process_alive(RepPid)),
-                ?assert(is_process_alive(SourceDb2#db.main_pid)),
+                ?assert(is_process_alive(couch_db:pid(SourceDb2))),
                 pause_writer(Writer),
                 wait_for_compaction("source", SourceDb2),
                 resume_writer(Writer),
 
                 compact_db("target", TargetDb2),
                 ?assert(is_process_alive(RepPid)),
-                ?assert(is_process_alive(TargetDb2#db.main_pid)),
+                ?assert(is_process_alive(couch_db:pid(TargetDb2))),
                 pause_writer(Writer),
                 wait_for_compaction("target", TargetDb2),
                 resume_writer(Writer)
@@ -249,16 +249,18 @@ should_compare_databases(Source, Target) ->
 
 reopen_db({remote, Db}) ->
     reopen_db(Db);
-reopen_db(#db{name=DbName}) ->
-    reopen_db(DbName);
-reopen_db(DbName) ->
+reopen_db(DbName) when is_binary(DbName) ->
     {ok, Db} = couch_db:open_int(DbName, []),
     ok = couch_db:close(Db),
-    {ok, Db}.
+    {ok, Db};
+reopen_db(Db) ->
+    reopen_db(couch_db:name(Db)).
 
-compact_db(Type, #db{name = Name}) ->
-    {ok, Db} = couch_db:open_int(Name, []),
-    {ok, CompactPid} = couch_db:start_compact(Db),
+
+compact_db(Type, Db) ->
+    Name = couch_db:name(Db),
+    {ok, NewDb} = couch_db:open_int(Name, []),
+    {ok, CompactPid} = couch_db:start_compact(NewDb),
     MonRef = erlang:monitor(process, CompactPid),
     receive
         {'DOWN', MonRef, process, CompactPid, normal} ->
@@ -280,7 +282,7 @@ compact_db(Type, #db{name = Name}) ->
               {reason, lists:concat(["Compaction for ", Type, " database ",
                                      ?b2l(Name), " didn't finish"])}]})
     end,
-    ok = couch_db:close(Db).
+    ok = couch_db:close(NewDb).
 
 wait_for_compaction(Type, Db) ->
     case couch_db:wait_for_compaction(Db) of
@@ -396,7 +398,8 @@ stop_writer(Pid) ->
                        {reason, "Timeout stopping source database writer"}]})
     end.
 
-writer_loop(#db{name = DbName}, Parent, Counter) ->
+writer_loop(Db, Parent, Counter) ->
+    DbName = couch_db:name(Db),
     {ok, Data} = file:read_file(?ATTFILE),
     maybe_pause(Parent, Counter),
     Doc = couch_doc:from_json_obj({[
@@ -414,9 +417,9 @@ writer_loop(#db{name = DbName}, Parent, Counter) ->
         ]}}
     ]}),
     maybe_pause(Parent, Counter),
-    {ok, Db} = couch_db:open_int(DbName, []),
-    {ok, _} = couch_db:update_doc(Db, Doc, []),
-    ok = couch_db:close(Db),
+    {ok, NewDb} = couch_db:open_int(DbName, []),
+    {ok, _} = couch_db:update_doc(NewDb, Doc, []),
+    ok = couch_db:close(NewDb),
     receive
         {get_count, Ref} ->
             Parent ! {count, Ref, Counter + 1},

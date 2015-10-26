@@ -470,29 +470,29 @@ handle_cast({db_compacted, DbName}, State) ->
         source = Source,
         target = Target
     } = State,
-    NewSource = case couch_db:is_db(Source) of
+    {ok, NewSource} = case couch_db:is_db(Source) of
         true ->
             case couch_db:name(Source) of
                 DbName ->
                     couch_db:reopen(Source);
                 _ ->
-                    Source
+                    {ok, Source}
             end;
         false ->
-            Source
+            {ok, Source}
     end,
-    NewTarget = case couch_db:is_db(Target) of
+    {ok, NewTarget} = case couch_db:is_db(Target) of
         true ->
             case couch_db:name(Target) of
                 DbName ->
                     couch_db:reopen(Target);
                 _ ->
-                    Target
+                    {ok, Target}
             end;
         false ->
-            Target
+            {ok, Target}
     end,
-    {noreply, #rep_state{
+    {noreply, State#rep_state{
         source = NewSource,
         target = NewTarget
     }};
@@ -630,7 +630,6 @@ init_state(Rep) ->
                                                                   VName),
             get_value(<<"update_seq">>, VInfo, ?LOWEST_SEQ)
     end,
-
 
     #doc{body={CheckpointHistory}} = SourceLog,
     State = #rep_state{
