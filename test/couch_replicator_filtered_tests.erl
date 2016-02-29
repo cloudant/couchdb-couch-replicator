@@ -240,5 +240,5 @@ db_url(local, DbName) ->
     DbName;
 db_url(remote, DbName) ->
     Addr = config:get("httpd", "bind_address", "127.0.0.1"),
-    Port = mochiweb_socket_server:get(couch_httpd, port),
-    ?l2b(io_lib:format("http://~s:~b/~s", [Addr, Port, DbName])).
+    Port = couch_httpd:port(backdoor_http),
+    ?l2b(io_lib:format("http://~s:~s/~s", [Addr, Port, DbName])).
