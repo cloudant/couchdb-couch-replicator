@@ -242,7 +242,7 @@ open_doc_revs(#httpdb{} = HttpDb, Id, Revs, Options, Fun, Acc) ->
         Callback = fun
           (200, Headers, StreamDataFun) ->
             remote_open_doc_revs_streamer_start(Self),
-            {<<"--">>, _, _} = couch_httpd:parse_multipart_request(
+            {<<"--">>, _, _} = couch_httpd_multipart:parse_multipart_request(
                 header_value("Content-Type", Headers),
                 StreamDataFun,
                 fun mp_parse_mixed/1
