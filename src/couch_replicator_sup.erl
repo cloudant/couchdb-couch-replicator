@@ -20,6 +20,18 @@ start_link() ->
 
 init(_Args) ->
     Children = [
+        {couch_scheduler,
+            {couch_scheduler, start_link, []},
+            permanent,
+            brutal_kill,
+            worker,
+            [couch_scheduler]},
+        {couch_scheduler_sup,
+            {couch_scheduler_sup, start_link, []},
+            permanent,
+            infinity,
+            supervisor,
+            [couch_scheduler_sup]},
         {couch_replication_event,
             {gen_event, start_link, [{local, couch_replication}]},
             permanent,
