@@ -14,17 +14,17 @@
 -behaviour(couch_scheduler_job).
 
 %% couch_scheduler_job api
--export([init/1, start/1, stop/1]).
+-export([init/1, start/2, stop/2]).
 
 %% couch_scheduler_job functions
 
 init(_Args) ->
-    ok.
+    {ok, nil}.
 
 
-start(State) ->
+start(_Args, State) ->
     {ok, State}.
 
 
-stop(State) ->
+stop(_Args, State) ->
     {ok, State}.
