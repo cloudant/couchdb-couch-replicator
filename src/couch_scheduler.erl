@@ -18,11 +18,12 @@
 -include("couch_scheduler.hrl").
 
 %% public api
--export([start_link/0, add_job/1, remove_job/1, job_count/0]).
+-export([start_link/0, add_job/3, remove_job/1, jobs/1]).
 
 %% gen_server callbacks
 -export([init/1, terminate/2, code_change/3]).
 -export([handle_call/3, handle_cast/2, handle_info/2]).
+-export([format_status/2]).
 
 %% config_listener callback
 -export([handle_config_change/5, handle_config_terminate/3]).
@@ -31,6 +32,12 @@
 -define(DEFAULT_MAX_JOBS, 100).
 -define(SCHEDULER_INTERVAL, 5000).
 -record(state, {timer, max_jobs}).
+-record(job, {
+          module :: module(),
+          id :: job_id(),
+          args :: job_args(),
+          last_run :: erlang:timestamp(),
+          state :: job_state()}).
 
 %% public functions
 
@@ -39,38 +46,38 @@ start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 
--spec add_job(#jobspec{}) -> ok | {error, already_added}.
-add_job(#jobspec{id = Id} = JobSpec) when Id /= undefined ->
-    gen_server:call(?MODULE, {add_job, JobSpec}).
+-spec add_job(module(), job_id(), job_args()) -> ok | {error, already_added}.
+add_job(Module, Id, Args) when is_atom(Module), Id /= undefined ->
+    Job = #job{module = Module,
+               id = Id,
+               args = Args,
+               last_run = {0, 0, 0},
+               state = runnable},
+    gen_server:call(?MODULE, {add_job, Job}).
 
 
 -spec remove_job(job_id()) -> ok.
-remove_job(JobId) ->
-    gen_server:call(?MODULE, {remove_job, JobId}).
+remove_job(Id) ->
+    gen_server:call(?MODULE, {remove_job, Id}).
 
 
--spec job_count() -> non_neg_integer().
-job_count() ->
-    ets:info(?MODULE, size).
+-spec jobs(job_state()) -> non_neg_integer().
+jobs(State) when State == running; State == runnable; State == paused ->
+    length(jobs_by_state(State)).
 
 
 %% gen_server functions
 
 init(_) ->
-    ?MODULE = ets:new(?MODULE, [named_table, {keypos, #scheduled_job.id}]),
+    ?MODULE = ets:new(?MODULE, [named_table, {keypos, #job.id}]),
     ok = config:listen_for_changes(?MODULE, self()),
     MaxJobs = config:get_integer("replicator", "max_jobs", ?DEFAULT_MAX_JOBS),
     {ok, Timer} = timer:send_after(?SCHEDULER_INTERVAL, reschedule),
     {ok, #state{max_jobs = MaxJobs, timer = Timer}}.
 
 
-handle_call({add_job, JobSpec}, _From, State) ->
-    ScheduledJob = #scheduled_job{
-        id = JobSpec#jobspec.id,
-        jobspec = JobSpec,
-        last_run = {0, 0, 0},
-        state = runnable},
-    case ets:insert_new(?MODULE, ScheduledJob) of
+handle_call({add_job, Job}, _From, State) ->
+    case ets:insert_new(?MODULE, Job) of
         true ->
             {reply, ok, State};
         false ->
@@ -78,7 +85,7 @@ handle_call({add_job, JobSpec}, _From, State) ->
     end;
 
 handle_call({remove_job, JobId}, _From, State) ->
-    true = ets:match_delete(?MODULE, #scheduled_job{id = JobId, _='_'}),
+    true = ets:match_delete(?MODULE, #job{id = JobId, _='_'}),
     case global:whereis_name({couch_scheduler_job, JobId}) of
         undefined ->
             {reply, ok, State};
@@ -123,6 +130,14 @@ code_change(_OldVsn, State, _Extra) ->
 terminate(_Reason, _State) ->
     ok.
 
+
+format_status(_Opt, [_PDict, State]) ->
+    [{max_jobs, State#state.max_jobs},
+     {running_jobs, length(jobs_by_state(running))},
+     {runnable_jobs, length(jobs_by_state(runnable))},
+     {paused_jobs, length(jobs_by_state(paused))}].
+
+
 %% config listener functions
 
 handle_config_change("replicator", "max_jobs", V, _, Pid) ->
@@ -146,22 +161,26 @@ handle_config_terminate(Self, _, _) ->
 %% private functions
 
 start_jobs(Count) ->
-    Runnable0 = ets:match_object(?MODULE, #scheduled_job{state = runnable, _='_'}),
-    Runnable1 = lists:sort(fun oldest_first/2, Runnable0),
+    Runnable0 = jobs_by_state(runnable),
+    Runnable1 = lists:sort(fun oldest_job_first/2, Runnable0),
     Runnable2 = lists:sublist(Runnable1, Count),
     lists:foreach(fun start_job/1, Runnable2).
 
 
-oldest_first(#scheduled_job{} = A, #scheduled_job{} = B) ->
-    A#scheduled_job.last_run =< B#scheduled_job.last_run.
+oldest_job_first(#job{} = A, #job{} = B) ->
+    A#job.last_run =< B#job.last_run.
 
 
-start_job(#scheduled_job{} = Job) ->
-    case supervisor:start_child(couch_scheduler_sup, [Job]) of
+start_job(#job{} = Job) ->
+    case supervisor:start_child(couch_scheduler_sup,
+        [Job#job.module, Job#job.id, Job#job.args]) of
         {ok, Child} ->
             couch_log:notice("Job ~p started as ~p", [Job, Child]),
-            true = ets:insert(?MODULE, Job#scheduled_job{state = running});
+            true = ets:insert(?MODULE, Job#job{state = running});
         {error, Reason} ->
             couch_log:notice("Job ~p failed to start for reason ~p",
                              [Job, Reason])
     end.
+
+jobs_by_state(State) ->
+    ets:match_object(?MODULE, #job{state = State, _='_'}).

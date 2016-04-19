@@ -17,32 +17,39 @@
 -include("couch_scheduler.hrl").
 
 %% public api
--export([start_link/1]).
+-export([start_link/3]).
 
 %% gen_server callbacks
 -export([init/1, terminate/2, code_change/3]).
 -export([handle_call/3, handle_cast/2, handle_info/2]).
 
--callback init(Args :: term()) ->
-    {ok, Id :: term(), State :: term()}.
+-callback init(Args :: job_args()) ->
+    {ok, State :: term()}.
 
--callback start(State :: term()) ->
+-callback start(Args :: job_args(), State :: term()) ->
     {ok, NewState :: term()}.
 
--callback stop(State :: term()) ->
+-callback stop(Args :: job_args(), State :: term()) ->
     {ok, NewState :: term()}.
 
+%% definitions
+-record(state, {module, id, args}).
 
-start_link(#scheduled_job{} = Job) ->
+start_link(Module, Id, Args) ->
     gen_server:start_link(
-      {global, {?MODULE, Job#scheduled_job.id}},
+      {global, {Module, Id}},
       ?MODULE,
-      Job#scheduled_job.jobspec,
+      {Module, Id, Args},
       []).
 
 
-init(_) ->
-    {ok, nil}.
+init({Module, Id, Args}) ->
+    State = #state{
+        module = Module,
+        id = Id,
+        args = Args
+    },
+    {ok, State}.
 
 
 handle_call(_Msg, _From, State) ->
