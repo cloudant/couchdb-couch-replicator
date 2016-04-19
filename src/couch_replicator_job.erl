@@ -18,13 +18,16 @@
 
 %% couch_scheduler_job functions
 
-init(_Args) ->
+init(Args) ->
+    couch_log:notice("Replicator job initialized with: ~p", [Args]),
     {ok, nil}.
 
 
-start(_Args, State) ->
+start(Args, State) ->
+    couch_log:notice("Replicator job started with args: ~p, state: ~p", [Args, State]),
     {ok, State}.
 
 
-stop(_Args, State) ->
+stop(Args, State) ->
+    couch_log:notice("Replicator job stopped with args: ~p, state: ~p", [Args, State]),
     {ok, State}.

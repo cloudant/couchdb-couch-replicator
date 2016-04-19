@@ -33,7 +33,7 @@
     {ok, NewState :: term()}.
 
 %% definitions
--record(state, {module, id, args}).
+-record(state, {module, id, args, job_state}).
 
 start_link(Module, Id, Args) ->
     gen_server:start_link(
@@ -44,10 +44,12 @@ start_link(Module, Id, Args) ->
 
 
 init({Module, Id, Args}) ->
+    {ok, JobState} = Module:init(Args),
     State = #state{
         module = Module,
         id = Id,
-        args = Args
+        args = Args,
+        job_state = JobState
     },
     {ok, State}.
 

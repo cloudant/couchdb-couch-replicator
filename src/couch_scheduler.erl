@@ -171,15 +171,16 @@ oldest_job_first(#job{} = A, #job{} = B) ->
     A#job.last_run =< B#job.last_run.
 
 
-start_job(#job{} = Job) ->
+start_job(#job{} = Job0) ->
     case supervisor:start_child(couch_scheduler_sup,
-        [Job#job.module, Job#job.id, Job#job.args]) of
+        [Job0#job.module, Job0#job.id, Job0#job.args]) of
         {ok, Child} ->
-            couch_log:notice("Job ~p started as ~p", [Job, Child]),
-            true = ets:insert(?MODULE, Job#job{state = running});
+            Job1 = Job0#job{state = running, last_run = os:timestamp()},
+            couch_log:notice("Job ~p started as ~p", [Job1#job.id, Child]),
+            true = ets:insert(?MODULE, Job1);
         {error, Reason} ->
             couch_log:notice("Job ~p failed to start for reason ~p",
-                             [Job, Reason])
+                             [Job0, Reason])
     end.
 
 jobs_by_state(State) ->
