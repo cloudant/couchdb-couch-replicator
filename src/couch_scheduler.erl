@@ -31,12 +31,14 @@
 %% definitions
 -define(DEFAULT_MAX_JOBS, 100).
 -define(SCHEDULER_INTERVAL, 5000).
+-define(MAX_HISTORY, 100).
 -record(state, {timer, max_jobs}).
 -record(job, {
           module :: module(),
           id :: job_id(),
           args :: job_args(),
-          last_run :: erlang:timestamp(),
+          pid :: pid(),
+          history :: [erlang:timestamp()],
           state :: job_state()}).
 
 %% public functions
@@ -49,10 +51,10 @@ start_link() ->
 -spec add_job(module(), job_id(), job_args()) -> ok | {error, already_added}.
 add_job(Module, Id, Args) when is_atom(Module), Id /= undefined ->
     Job = #job{module = Module,
-               id = Id,
-               args = Args,
-               last_run = {0, 0, 0},
-               state = runnable},
+        id = Id,
+        args = Args,
+        history = [],
+        state = runnable},
     gen_server:call(?MODULE, {add_job, Job}).
 
 
@@ -62,7 +64,7 @@ remove_job(Id) ->
 
 
 -spec jobs(job_state()) -> non_neg_integer().
-jobs(State) when State == running; State == runnable; State == paused ->
+jobs(State) ->
     length(jobs_by_state(State)).
 
 
@@ -119,6 +121,19 @@ handle_info(reschedule, State) ->
     {ok, Timer} = timer:send_after(?SCHEDULER_INTERVAL, reschedule),
     {noreply, State#state{timer = Timer}};
 
+
+handle_info({'DOWN', _Ref, process, Pid, Reason}, State) ->
+    {ok, #job{}=Job0} = job_by_pid(Pid),
+    couch_log:notice("Job ~p died with reason: ~p",
+        [Job0#job.id, Reason]),
+    Job1 = Job0#job{
+        state = runnable,
+        pid = undefined,
+        history = update_history(Job0#job.history)
+    },
+    true = ets:insert(?MODULE, Job1),
+    {noreply, State};
+
 handle_info(_, State) ->
     {noreply, State}.
 
@@ -168,14 +183,25 @@ start_jobs(Count) ->
 
 
 oldest_job_first(#job{} = A, #job{} = B) ->
-    A#job.last_run =< B#job.last_run.
+    last_run(A) =< last_run(B).
+
+
+-spec last_run(#job{}) -> erlang:timestamp() | never.
+last_run(#job{}=Job) ->
+    case Job#job.history of
+        [] ->
+            never;
+        [LastRun | _] ->
+            LastRun
+    end.
 
 
 start_job(#job{} = Job0) ->
     case supervisor:start_child(couch_scheduler_sup,
         [Job0#job.module, Job0#job.id, Job0#job.args]) of
         {ok, Child} ->
-            Job1 = Job0#job{state = running, last_run = os:timestamp()},
+            monitor(process, Child),
+            Job1 = Job0#job{state = running, pid = Child},
             couch_log:notice("Job ~p started as ~p", [Job1#job.id, Child]),
             true = ets:insert(?MODULE, Job1);
         {error, Reason} ->
@@ -183,5 +209,20 @@ start_job(#job{} = Job0) ->
                              [Job0, Reason])
     end.
 
-jobs_by_state(State) ->
-    ets:match_object(?MODULE, #job{state = State, _='_'}).
+-spec jobs_by_state(job_state()) -> [#job{}].
+jobs_by_state(State) when State == running; State == runnable; State == paused ->
+    ets:match_object(?MODULE, #job{state=State, _='_'}).
+
+-spec job_by_pid(pid()) -> {ok, #job{}} | {error, not_found}.
+job_by_pid(Pid) when is_pid(Pid) ->
+    case ets:match_object(?MODULE, #job{pid=Pid, _='_'}) of
+        [] ->
+            {error, not_found};
+        [#job{}=Job] ->
+            {ok, Job}
+    end.
+
+-spec update_history([erlang:timestamp()]) -> [erlang:timestamp()].
+update_history(History0) when is_list(History0) ->
+    History1 = [os:timestamp() | History0],
+    lists:sublist(History1, ?MAX_HISTORY).

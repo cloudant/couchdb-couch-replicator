@@ -21,7 +21,7 @@ start_link() ->
 
 init(_Args) ->
     Start = {couch_scheduler_job, start_link, []},
-    Restart = transient,
+    Restart = temporary, % A crashed job is not entitled to immediate restart.
     Shutdown = 5000,
     Type = worker,
     Modules = [couch_scheduler_job],
