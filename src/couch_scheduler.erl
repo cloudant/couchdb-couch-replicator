@@ -86,13 +86,13 @@ handle_call({add_job, Job}, _From, State) ->
             {reply, {error, already_added}, State}
     end;
 
-handle_call({remove_job, JobId}, _From, State) ->
-    true = ets:match_delete(?MODULE, #job{id = JobId, _='_'}),
-    case global:whereis_name({couch_scheduler_job, JobId}) of
-        undefined ->
+handle_call({remove_job, Id}, _From, State) ->
+    case job_by_id(Id) of
+        {ok, Job} ->
+            true = ets:delete(?MODULE, Id),
+            supervisor:terminate_child(couch_scheduler_sup, Job#job.pid),
             {reply, ok, State};
-        Pid ->
-            supervisor:terminate_child(couch_scheduler_sup, Pid),
+        undefined ->
             {reply, ok, State}
     end;
 
@@ -123,16 +123,21 @@ handle_info(reschedule, State) ->
 
 
 handle_info({'DOWN', _Ref, process, Pid, Reason}, State) ->
-    {ok, #job{}=Job0} = job_by_pid(Pid),
-    couch_log:notice("Job ~p died with reason: ~p",
-        [Job0#job.id, Reason]),
-    Job1 = Job0#job{
-        state = runnable,
-        pid = undefined,
-        history = update_history(Job0#job.history)
-    },
-    true = ets:insert(?MODULE, Job1),
-    {noreply, State};
+    case job_by_pid(Pid) of
+        {ok, #job{}=Job0} ->
+            couch_log:notice("Job ~p died with reason: ~p",
+                             [Job0#job.id, Reason]),
+            Job1 = Job0#job{
+                     state = runnable,
+                     pid = undefined,
+                     history = update_history(Job0#job.history)
+                    },
+            true = ets:insert(?MODULE, Job1),
+            {noreply, State};
+        {error, not_found} ->
+            % removed in remove_job and should not be reinserted.
+            {noreply, State}
+    end;
 
 handle_info(_, State) ->
     {noreply, State}.
@@ -221,6 +226,17 @@ job_by_pid(Pid) when is_pid(Pid) ->
         [#job{}=Job] ->
             {ok, Job}
     end.
+
+-spec job_by_id(job_id()) -> {ok, #job{}} | {error, not_found}.
+job_by_id(Id) ->
+    case ets:lookup(?MODULE, Id) of
+        [] ->
+            {error, not_found};
+        [#job{}=Job] ->
+            {ok, Job}
+    end.
+
+
 
 -spec update_history([erlang:timestamp()]) -> [erlang:timestamp()].
 update_history(History0) when is_list(History0) ->
