@@ -14,20 +14,20 @@
 -behaviour(couch_scheduler_job).
 
 %% couch_scheduler_job api
--export([init/1, start/2, stop/2]).
+-export([init/2, start/3, stop/3]).
 
 %% couch_scheduler_job functions
 
-init(Args) ->
-    couch_log:notice("Replicator job initialized with: ~p", [Args]),
+init(Id, Args) ->
+    couch_log:notice("Replicator job ~p initialized with: ~p", [Id, Args]),
     {ok, init}.
 
 
-start(Args, State) ->
-    couch_log:notice("Replicator job started with args: ~p, state: ~p", [Args, State]),
+start(Id, Args, State) ->
+    couch_log:notice("Replicator job ~p started with args: ~p, state: ~p", [Id, Args, State]),
     {ok, start}.
 
 
-stop(Args, State) ->
-    couch_log:notice("Replicator job stopped with args: ~p, state: ~p", [Args, State]),
+stop(Id, Args, State) ->
+    couch_log:notice("Replicator job ~p stopped with args: ~p, state: ~p", [Id, Args, State]),
     {ok, stop}.
