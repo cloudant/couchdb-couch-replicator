@@ -18,7 +18,7 @@
 -include("couch_scheduler.hrl").
 
 %% public api
--export([start_link/0, add_job/3, remove_job/1, jobs/1]).
+-export([start_link/0, add_job/3, remove_job/1]).
 
 %% gen_server callbacks
 -export([init/1, terminate/2, code_change/3]).
@@ -38,8 +38,7 @@
           id :: job_id(),
           args :: job_args(),
           pid :: pid(),
-          history :: [erlang:timestamp()],
-          state :: job_state()}).
+          history :: [erlang:timestamp()]}).
 
 %% public functions
 
@@ -53,19 +52,13 @@ add_job(Module, Id, Args) when is_atom(Module), Id /= undefined ->
     Job = #job{module = Module,
         id = Id,
         args = Args,
-        history = [],
-        state = runnable},
+        history = []},
     gen_server:call(?MODULE, {add_job, Job}).
 
 
 -spec remove_job(job_id()) -> ok.
 remove_job(Id) ->
     gen_server:call(?MODULE, {remove_job, Id}).
-
-
--spec jobs(job_state()) -> non_neg_integer().
-jobs(State) ->
-    length(jobs_by_state(State)).
 
 
 %% gen_server functions
@@ -79,7 +72,7 @@ init(_) ->
 
 
 handle_call({add_job, Job}, _From, State) ->
-    case ets:insert_new(?MODULE, Job) of
+    case add_job_int(Job) of
         true ->
             {reply, ok, State};
         false ->
@@ -89,9 +82,8 @@ handle_call({add_job, Job}, _From, State) ->
 handle_call({remove_job, Id}, _From, State) ->
     case job_by_id(Id) of
         {ok, Job} ->
-            true = ets:delete(?MODULE, Id),
-            stopped = gen_server:call(Job#job.pid, stop),
-            supervisor:terminate_child(couch_scheduler_sup, Job#job.pid),
+            ok = stop_job_int(Job),
+            true = remove_job_int(Job),
             {reply, ok, State};
         undefined ->
             {reply, ok, State}
@@ -102,6 +94,7 @@ handle_call(_, _From, State) ->
 
 
 handle_cast({set_max_jobs, MaxJobs}, State) when is_integer(MaxJobs) ->
+    couch_log:notice("~p: max_jobs set to ~B", [?MODULE, MaxJobs]),
     {noreply, State#state{max_jobs = MaxJobs}};
 
 handle_cast(_, State) ->
@@ -110,13 +103,14 @@ handle_cast(_, State) ->
 
 handle_info(reschedule, State) ->
     Counts = supervisor:count_children(couch_scheduler_sup),
-    WorkerCount = proplists:get_value(workers, Counts),
-    AvailableSlots = State#state.max_jobs - WorkerCount,
-    case AvailableSlots > 0 of
-        true ->
-            start_jobs(AvailableSlots);
-        false ->
-            ok
+    Workers = proplists:get_value(workers, Counts),
+    if
+        Workers == State#state.max_jobs ->
+            ok;
+        Workers < State#state.max_jobs ->
+            start_jobs(State#state.max_jobs - Workers);
+        Workers > State#state.max_jobs ->
+            stop_jobs(Workers - State#state.max_jobs)
     end,
     {ok, cancel} = timer:cancel(State#state.timer),
     {ok, Timer} = timer:send_after(?SCHEDULER_INTERVAL, reschedule),
@@ -126,10 +120,9 @@ handle_info(reschedule, State) ->
 handle_info({'DOWN', _Ref, process, Pid, Reason}, State) ->
     case job_by_pid(Pid) of
         {ok, #job{}=Job0} ->
-            couch_log:notice("Job ~p died with reason: ~p",
-                             [Job0#job.id, Reason]),
+            couch_log:notice("~p: Job ~p died with reason: ~p",
+                             [?MODULE, Job0#job.id, Reason]),
             Job1 = Job0#job{
-                     state = runnable,
                      pid = undefined,
                      history = update_history(Job0#job.history)
                     },
@@ -154,9 +147,8 @@ terminate(_Reason, _State) ->
 
 format_status(_Opt, [_PDict, State]) ->
     [{max_jobs, State#state.max_jobs},
-     {running_jobs, length(jobs_by_state(running))},
-     {runnable_jobs, length(jobs_by_state(runnable))},
-     {paused_jobs, length(jobs_by_state(paused))}].
+     {running_jobs, running_job_count()},
+     {pending_jobs, pending_job_count()}].
 
 
 %% config listener functions
@@ -182,10 +174,19 @@ handle_config_terminate(Self, _, _) ->
 %% private functions
 
 start_jobs(Count) ->
-    Runnable0 = jobs_by_state(runnable),
+    Runnable0 = pending_jobs(),
     Runnable1 = lists:sort(fun oldest_job_first/2, Runnable0),
     Runnable2 = lists:sublist(Runnable1, Count),
-    lists:foreach(fun start_job/1, Runnable2).
+    couch_log:notice("~p: starting ~p", [?MODULE, Runnable2]),
+    lists:foreach(fun start_job_int/1, Runnable2).
+
+
+stop_jobs(Count) ->
+    Running0 = running_jobs(),
+    Running1 = lists:sort(fun oldest_job_first/2, Running0),
+    Running2 = lists:sublist(Running1, Count),
+    couch_log:notice("~p: stopping ~p", [?MODULE, Running2]),
+    lists:foreach(fun stop_job_int/1, Running2).
 
 
 oldest_job_first(#job{} = A, #job{} = B) ->
@@ -202,23 +203,67 @@ last_run(#job{}=Job) ->
     end.
 
 
-start_job(#job{} = Job0) ->
-    case supervisor:start_child(couch_scheduler_sup,
-        [Job0#job.module, Job0#job.id, Job0#job.args]) of
+-spec add_job_int(#job{}) -> boolean().
+add_job_int(#job{} = Job) ->
+    ets:insert_new(?MODULE, Job).
+
+
+start_job_int(#job{pid = Pid}) when Pid /= undefined ->
+    ok;
+
+start_job_int(#job{} = Job0) ->
+    Args = [Job0#job.module, Job0#job.id, Job0#job.args],
+    case supervisor:start_child(couch_scheduler_sup, Args) of
         {ok, Child} ->
             monitor(process, Child),
             started = gen_server:call(Child, start),
-            Job1 = Job0#job{state = running, pid = Child},
-            couch_log:notice("Job ~p started as ~p", [Job1#job.id, Child]),
-            true = ets:insert(?MODULE, Job1);
+            Job1 = Job0#job{pid = Child},
+            true = ets:insert(?MODULE, Job1),
+            couch_log:notice("~p: Job ~p started as ~p",
+                [?MODULE, Job1#job.id, Job1#job.pid]);
         {error, Reason} ->
-            couch_log:notice("Job ~p failed to start for reason ~p",
-                             [Job0, Reason])
+            couch_log:notice("~p: Job ~p failed to start for reason ~p",
+                [?MODULE, Job0, Reason])
     end.
 
--spec jobs_by_state(job_state()) -> [#job{}].
-jobs_by_state(State) when State == running; State == runnable; State == paused ->
-    ets:match_object(?MODULE, #job{state=State, _='_'}).
+
+-spec stop_job_int(#job{}) -> ok | {error, term()}.
+stop_job_int(#job{pid = undefined}) ->
+    ok;
+
+stop_job_int(#job{} = Job0) ->
+    stopped = gen_server:call(Job0#job.pid, stop),
+    Job1 = Job0#job{pid = undefined},
+    true = ets:insert(?MODULE, Job1),
+    couch_log:notice("~p: Job ~p stopped as ~p",
+        [?MODULE, Job0#job.id, Job0#job.pid]),
+    supervisor:terminate_child(couch_scheduler_sup, Job0#job.pid).
+
+
+-spec remove_job_int(#job{}) -> true.
+remove_job_int(#job{} = Job) ->
+    ets:delete(?MODULE, Job#job.id).
+
+
+-spec running_job_count() -> non_neg_integer().
+running_job_count() ->
+    ets:info(?MODULE, size) - pending_job_count().
+
+
+-spec running_jobs() -> [#job{}].
+running_jobs() ->
+    ets:tab2list(?MODULE) -- pending_jobs().
+
+
+-spec pending_job_count() -> non_neg_integer().
+pending_job_count() ->
+    ets:select_count(?MODULE, #job{pid=undefined, _='_'}).
+
+
+-spec pending_jobs() -> [#job{}].
+pending_jobs() ->
+    ets:match_object(?MODULE, #job{pid=undefined, _='_'}).
+
 
 -spec job_by_pid(pid()) -> {ok, #job{}} | {error, not_found}.
 job_by_pid(Pid) when is_pid(Pid) ->
@@ -229,6 +274,7 @@ job_by_pid(Pid) when is_pid(Pid) ->
             {ok, Job}
     end.
 
+
 -spec job_by_id(job_id()) -> {ok, #job{}} | {error, not_found}.
 job_by_id(Id) ->
     case ets:lookup(?MODULE, Id) of
@@ -237,7 +283,6 @@ job_by_id(Id) ->
         [#job{}=Job] ->
             {ok, Job}
     end.
-
 
 
 -spec update_history([erlang:timestamp()]) -> [erlang:timestamp()].
