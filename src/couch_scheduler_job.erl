@@ -23,13 +23,13 @@
 -export([init/1, terminate/2, code_change/3]).
 -export([handle_call/3, handle_cast/2, handle_info/2]).
 
--callback init(Args :: job_args()) ->
+-callback init(Id :: job_id(), Args :: job_args()) ->
     {ok, State :: term()}.
 
--callback start(Args :: job_args(), State :: term()) ->
+-callback start(Id :: job_id(), Args :: job_args(), State :: term()) ->
     {ok, NewState :: term()}.
 
--callback stop(Args :: job_args(), State :: term()) ->
+-callback stop(Id :: job_id(), Args :: job_args(), State :: term()) ->
     {ok, NewState :: term()}.
 
 %% definitions
@@ -44,7 +44,7 @@ start_link(Module, Id, Args) ->
 
 
 init({Module, Id, Args}) ->
-    {ok, JobState} = Module:init(Args),
+    {ok, JobState} = Module:init(Id, Args),
     State = #state{
         module = Module,
         id = Id,
@@ -55,18 +55,22 @@ init({Module, Id, Args}) ->
 
 
 handle_call(start, _From, State0) ->
-    Module = State0#state.module,
-    Args = State0#state.args,
-    JobState0 = State0#state.job_state,
-    {ok, JobState1} = Module:start(Args, JobState0),
+    #state{
+        module = Module,
+        id = Id,
+        args = Args,
+        job_state = JobState0} = State0,
+    {ok, JobState1} = Module:start(Id, Args, JobState0),
     State1 = State0#state{job_state=JobState1},
     {reply, started, State1};
 
 handle_call(stop, _From, State0) ->
-    Module = State0#state.module,
-    Args = State0#state.args,
-    JobState0 = State0#state.job_state,
-    {ok, JobState1} = Module:stop(Args, JobState0),
+    #state{
+        module = Module,
+        id = Id,
+        args = Args,
+        job_state = JobState0} = State0,
+    {ok, JobState1} = Module:stop(Id, Args, JobState0),
     State1 = State0#state{job_state=JobState1},
     {reply, stopped, State1};
 
