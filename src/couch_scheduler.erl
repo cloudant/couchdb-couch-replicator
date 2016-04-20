@@ -90,6 +90,7 @@ handle_call({remove_job, Id}, _From, State) ->
     case job_by_id(Id) of
         {ok, Job} ->
             true = ets:delete(?MODULE, Id),
+            stopped = gen_server:call(Job#job.pid, stop),
             supervisor:terminate_child(couch_scheduler_sup, Job#job.pid),
             {reply, ok, State};
         undefined ->
@@ -206,6 +207,7 @@ start_job(#job{} = Job0) ->
         [Job0#job.module, Job0#job.id, Job0#job.args]) of
         {ok, Child} ->
             monitor(process, Child),
+            started = gen_server:call(Child, start),
             Job1 = Job0#job{state = running, pid = Child},
             couch_log:notice("Job ~p started as ~p", [Job1#job.id, Child]),
             true = ets:insert(?MODULE, Job1);

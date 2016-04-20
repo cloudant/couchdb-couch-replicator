@@ -54,6 +54,22 @@ init({Module, Id, Args}) ->
     {ok, State}.
 
 
+handle_call(start, _From, State0) ->
+    Module = State0#state.module,
+    Args = State0#state.args,
+    JobState0 = State0#state.job_state,
+    {ok, JobState1} = Module:start(Args, JobState0),
+    State1 = State0#state{job_state=JobState1},
+    {reply, started, State1};
+
+handle_call(stop, _From, State0) ->
+    Module = State0#state.module,
+    Args = State0#state.args,
+    JobState0 = State0#state.job_state,
+    {ok, JobState1} = Module:stop(Args, JobState0),
+    State1 = State0#state{job_state=JobState1},
+    {reply, stopped, State1};
+
 handle_call(_Msg, _From, State) ->
     {noreply, State}.
 

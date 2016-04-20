@@ -20,14 +20,14 @@
 
 init(Args) ->
     couch_log:notice("Replicator job initialized with: ~p", [Args]),
-    {ok, nil}.
+    {ok, init}.
 
 
 start(Args, State) ->
     couch_log:notice("Replicator job started with args: ~p, state: ~p", [Args, State]),
-    {ok, State}.
+    {ok, start}.
 
 
 stop(Args, State) ->
     couch_log:notice("Replicator job stopped with args: ~p, state: ~p", [Args, State]),
-    {ok, State}.
+    {ok, stop}.
