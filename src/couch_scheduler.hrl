@@ -13,4 +13,3 @@
 
 -type job_id() :: term().
 -type job_args() :: term().
--type job_state() :: running | runnable | paused.
