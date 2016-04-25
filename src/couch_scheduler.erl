@@ -107,10 +107,10 @@ handle_info(reschedule, State) ->
     if
         Workers == State#state.max_jobs ->
             ok;
-        Workers < State#state.max_jobs ->
-            start_jobs(State#state.max_jobs - Workers);
         Workers > State#state.max_jobs ->
-            stop_jobs(Workers - State#state.max_jobs)
+            stop_jobs(Workers - State#state.max_jobs);
+        Workers < State#state.max_jobs ->
+            start_jobs(State#state.max_jobs - Workers)
     end,
     {ok, cancel} = timer:cancel(State#state.timer),
     {ok, Timer} = timer:send_after(?SCHEDULER_INTERVAL, reschedule),
