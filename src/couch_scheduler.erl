@@ -271,7 +271,6 @@ job_by_pid(Pid) when is_pid(Pid) ->
             {ok, Job}
     end.
 
-
 -spec job_by_id(job_id()) -> {ok, #job{}} | {error, not_found}.
 job_by_id(Id) ->
     case ets:lookup(?MODULE, Id) of
@@ -281,23 +280,24 @@ job_by_id(Id) ->
             {ok, Job}
     end.
 
-
 -spec update_history([erlang:timestamp()]) -> [erlang:timestamp()].
 update_history(History0) when is_list(History0) ->
     History1 = [os:timestamp() | History0],
     lists:sublist(History1, ?MAX_HISTORY).
 
+
 -spec reschedule(#state{}) -> #state{}.
 reschedule(State) ->
-    Counts = supervisor:count_children(couch_scheduler_sup),
-    Workers = proplists:get_value(workers, Counts),
+    Max = State#state.max_jobs,
+    Running = running_job_count(),
+    Pending = pending_job_count(),
     if
-        Workers == State#state.max_jobs ->
+        Running == Max ->
             ok;
-        Workers > State#state.max_jobs ->
-            stop_jobs(Workers - State#state.max_jobs);
-        Workers < State#state.max_jobs ->
-            start_jobs(State#state.max_jobs - Workers)
+        Running > Max ->
+            stop_jobs(Running - Max);
+        Running < Max ->
+            start_jobs(Max - Running)
     end,
     State.
 
