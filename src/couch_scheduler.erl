@@ -30,9 +30,9 @@
 
 %% definitions
 -define(DEFAULT_MAX_JOBS, 100).
--define(SCHEDULER_INTERVAL, 5000).
+-define(DEFAULT_SCHEDULER_INTERVAL, 5000).
 -define(MAX_HISTORY, 100).
--record(state, {timer, max_jobs}).
+-record(state, {interval, timer, max_jobs}).
 -record(job, {
           module :: module(),
           id :: job_id(),
@@ -66,9 +66,10 @@ remove_job(Id) ->
 init(_) ->
     ?MODULE = ets:new(?MODULE, [named_table, {keypos, #job.id}]),
     ok = config:listen_for_changes(?MODULE, self()),
+    Interval = config:get_integer("replicator", "interval", ?DEFAULT_SCHEDULER_INTERVAL),
     MaxJobs = config:get_integer("replicator", "max_jobs", ?DEFAULT_MAX_JOBS),
-    {ok, Timer} = timer:send_after(?SCHEDULER_INTERVAL, reschedule),
-    {ok, #state{max_jobs = MaxJobs, timer = Timer}}.
+    {ok, Timer} = timer:send_after(Interval, reschedule),
+    {ok, #state{interval = Interval, max_jobs = MaxJobs, timer = Timer}}.
 
 
 handle_call({add_job, Job}, _From, State) ->
@@ -93,29 +94,23 @@ handle_call(_, _From, State) ->
     {noreply, State}.
 
 
-handle_cast({set_max_jobs, MaxJobs}, State) when is_integer(MaxJobs) ->
+handle_cast({set_max_jobs, MaxJobs}, State) when is_integer(MaxJobs), MaxJobs > 0 ->
     couch_log:notice("~p: max_jobs set to ~B", [?MODULE, MaxJobs]),
     {noreply, State#state{max_jobs = MaxJobs}};
+
+handle_cast({set_interval, Interval}, State) when is_integer(Interval), Interval > 0 ->
+    couch_log:notice("~p: interval set to ~B", [?MODULE, Interval]),
+    {noreply, State#state{interval = Interval}};
 
 handle_cast(_, State) ->
     {noreply, State}.
 
 
-handle_info(reschedule, State) ->
-    Counts = supervisor:count_children(couch_scheduler_sup),
-    Workers = proplists:get_value(workers, Counts),
-    if
-        Workers == State#state.max_jobs ->
-            ok;
-        Workers > State#state.max_jobs ->
-            stop_jobs(Workers - State#state.max_jobs);
-        Workers < State#state.max_jobs ->
-            start_jobs(State#state.max_jobs - Workers)
-    end,
-    {ok, cancel} = timer:cancel(State#state.timer),
-    {ok, Timer} = timer:send_after(?SCHEDULER_INTERVAL, reschedule),
-    {noreply, State#state{timer = Timer}};
-
+handle_info(reschedule, State0) ->
+    State1 = reschedule(State0),
+    {ok, cancel} = timer:cancel(State1#state.timer),
+    {ok, Timer} = timer:send_after(State1#state.interval, reschedule),
+    {noreply, State1#state{timer = Timer}};
 
 handle_info({'DOWN', _Ref, process, Pid, Reason}, State) ->
     case job_by_pid(Pid) of
@@ -157,6 +152,10 @@ handle_config_change("replicator", "max_jobs", V, _, Pid) ->
     ok = gen_server:cast(Pid, {set_max_jobs, list_to_integer(V)}),
     {ok, Pid};
 
+handle_config_change("replicator", "interval", V, _, Pid) ->
+    ok = gen_server:cast(Pid, {set_interval, list_to_integer(V)}),
+    {ok, Pid};
+
 handle_config_change(_, _, _, _, Pid) ->
     {ok, Pid}.
 
@@ -177,7 +176,6 @@ start_jobs(Count) ->
     Runnable0 = pending_jobs(),
     Runnable1 = lists:sort(fun oldest_job_first/2, Runnable0),
     Runnable2 = lists:sublist(Runnable1, Count),
-    couch_log:notice("~p: starting ~p", [?MODULE, Runnable2]),
     lists:foreach(fun start_job_int/1, Runnable2).
 
 
@@ -185,7 +183,6 @@ stop_jobs(Count) ->
     Running0 = running_jobs(),
     Running1 = lists:sort(fun oldest_job_first/2, Running0),
     Running2 = lists:sublist(Running1, Count),
-    couch_log:notice("~p: stopping ~p", [?MODULE, Running2]),
     lists:foreach(fun stop_job_int/1, Running2).
 
 
@@ -289,3 +286,18 @@ job_by_id(Id) ->
 update_history(History0) when is_list(History0) ->
     History1 = [os:timestamp() | History0],
     lists:sublist(History1, ?MAX_HISTORY).
+
+-spec reschedule(#state{}) -> #state{}.
+reschedule(State) ->
+    Counts = supervisor:count_children(couch_scheduler_sup),
+    Workers = proplists:get_value(workers, Counts),
+    if
+        Workers == State#state.max_jobs ->
+            ok;
+        Workers > State#state.max_jobs ->
+            stop_jobs(Workers - State#state.max_jobs);
+        Workers < State#state.max_jobs ->
+            start_jobs(State#state.max_jobs - Workers)
+    end,
+    State.
+
