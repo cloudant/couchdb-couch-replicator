@@ -30,7 +30,7 @@
 
 %% definitions
 -define(DEFAULT_MAX_JOBS, 100).
--define(DEFAULT_SCHEDULER_INTERVAL, 5000).
+-define(DEFAULT_SCHEDULER_INTERVAL, 60000).
 -record(state, {interval, timer, max_jobs}).
 -record(job, {
           module :: module(),
@@ -110,7 +110,7 @@ handle_cast(_, State) ->
 
 
 handle_info(reschedule, State) ->
-    ok = reschedule(State),
+    ok = reschedule(State#state.max_jobs),
     {ok, cancel} = timer:cancel(State#state.timer),
     {ok, Timer} = timer:send_after(State#state.interval, reschedule),
     {noreply, State#state{timer = Timer}};
@@ -272,9 +272,8 @@ job_by_id(Id) ->
     end.
 
 
--spec reschedule(#state{}) -> ok.
-reschedule(State) ->
-    Max = State#state.max_jobs,
+-spec reschedule(Max :: non_neg_integer()) -> ok.
+reschedule(Max) when is_integer(Max), Max > 0 ->
     Running = running_job_count(),
     Pending = pending_job_count(),
     if
@@ -282,7 +281,10 @@ reschedule(State) ->
             stop_jobs(Running - Max);
         Running < Max andalso Pending > 0 ->
             start_jobs(Max - Running);
-        true ->
+        Pending > 0 ->
+            stop_jobs(erlang:min(Pending, Running)),
+            start_jobs(erlang:min(Pending, Running));
+        Pending == 0 ->
             ok
     end,
     ok.
