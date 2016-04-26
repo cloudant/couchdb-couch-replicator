@@ -254,7 +254,8 @@ running_jobs() ->
 
 -spec pending_job_count() -> non_neg_integer().
 pending_job_count() ->
-    ets:select_count(?MODULE, #job{pid=undefined, _='_'}).
+    MatchSpec = [{#job{pid='$1', _='_'}, [{'not', {'is_pid', '$1'}}], [true]}],
+    ets:select_count(?MODULE, MatchSpec).
 
 
 -spec pending_jobs() -> [#job{}].
