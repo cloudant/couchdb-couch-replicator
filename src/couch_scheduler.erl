@@ -297,8 +297,7 @@ reschedule(State) ->
             ok;
         Running > Max ->
             stop_jobs(Running - Max);
-        Running < Max ->
+        Running < Max andalso Pending > 0 ->
             start_jobs(Max - Running)
     end,
     State.
-
