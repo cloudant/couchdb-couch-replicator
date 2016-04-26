@@ -31,14 +31,15 @@
 %% definitions
 -define(DEFAULT_MAX_JOBS, 100).
 -define(DEFAULT_SCHEDULER_INTERVAL, 5000).
--define(MAX_HISTORY, 100).
 -record(state, {interval, timer, max_jobs}).
 -record(job, {
           module :: module(),
           id :: job_id(),
           args :: job_args(),
           pid :: pid(),
-          history :: [erlang:timestamp()]}).
+          started_at :: erlang:timestamp(),
+          stopped_at :: erlang:timestamp()}).
+
 
 %% public functions
 
@@ -49,10 +50,12 @@ start_link() ->
 
 -spec add_job(module(), job_id(), job_args()) -> ok | {error, already_added}.
 add_job(Module, Id, Args) when is_atom(Module), Id /= undefined ->
-    Job = #job{module = Module,
+    Job = #job{
+        module = Module,
         id = Id,
         args = Args,
-        history = []},
+        started_at = {0, 0, 0},
+        stopped_at = {0, 0, 0}},
     gen_server:call(?MODULE, {add_job, Job}).
 
 
@@ -117,10 +120,7 @@ handle_info({'DOWN', _Ref, process, Pid, Reason}, State) ->
         {ok, #job{}=Job0} ->
             couch_log:notice("~p: Job ~p died with reason: ~p",
                              [?MODULE, Job0#job.id, Reason]),
-            Job1 = Job0#job{
-                     pid = undefined,
-                     history = update_history(Job0#job.history)
-                    },
+            Job1 = Job0#job{pid = undefined},
             true = ets:insert(?MODULE, Job1),
             {noreply, State};
         {error, not_found} ->
@@ -187,17 +187,7 @@ stop_jobs(Count) ->
 
 
 oldest_job_first(#job{} = A, #job{} = B) ->
-    last_run(A) =< last_run(B).
-
-
--spec last_run(#job{}) -> erlang:timestamp() | never.
-last_run(#job{}=Job) ->
-    case Job#job.history of
-        [] ->
-            never;
-        [LastRun | _] ->
-            LastRun
-    end.
+    A#job.started_at =< B#job.started_at.
 
 
 -spec add_job_int(#job{}) -> boolean().
@@ -214,7 +204,7 @@ start_job_int(#job{} = Job0) ->
         {ok, Child} ->
             monitor(process, Child),
             started = gen_server:call(Child, start),
-            Job1 = Job0#job{pid = Child},
+            Job1 = Job0#job{pid = Child, started_at = os:timestamp()},
             true = ets:insert(?MODULE, Job1),
             couch_log:notice("~p: Job ~p started as ~p",
                 [?MODULE, Job1#job.id, Job1#job.pid]);
@@ -230,7 +220,7 @@ stop_job_int(#job{pid = undefined}) ->
 
 stop_job_int(#job{} = Job0) ->
     stopped = gen_server:call(Job0#job.pid, stop),
-    Job1 = Job0#job{pid = undefined},
+    Job1 = Job0#job{pid = undefined, stopped_at = os:timestamp()},
     true = ets:insert(?MODULE, Job1),
     couch_log:notice("~p: Job ~p stopped as ~p",
         [?MODULE, Job0#job.id, Job0#job.pid]),
@@ -280,11 +270,6 @@ job_by_id(Id) ->
         [#job{}=Job] ->
             {ok, Job}
     end.
-
--spec update_history([erlang:timestamp()]) -> [erlang:timestamp()].
-update_history(History0) when is_list(History0) ->
-    History1 = [os:timestamp() | History0],
-    lists:sublist(History1, ?MAX_HISTORY).
 
 
 -spec reschedule(#state{}) -> ok.
