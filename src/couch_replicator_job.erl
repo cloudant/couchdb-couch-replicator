@@ -19,15 +19,12 @@
 %% couch_scheduler_job functions
 
 init(Id, Args) ->
-    couch_log:notice("Replicator job ~p initialized with: ~p", [Id, Args]),
     {ok, init}.
 
 
 start(Id, Args, State) ->
-    couch_log:notice("Replicator job ~p started with args: ~p, state: ~p", [Id, Args, State]),
     {ok, start}.
 
 
 stop(Id, Args, State) ->
-    couch_log:notice("Replicator job ~p stopped with args: ~p, state: ~p", [Id, Args, State]),
     {ok, stop}.
