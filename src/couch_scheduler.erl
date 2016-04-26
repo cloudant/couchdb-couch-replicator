@@ -106,11 +106,11 @@ handle_cast(_, State) ->
     {noreply, State}.
 
 
-handle_info(reschedule, State0) ->
-    State1 = reschedule(State0),
-    {ok, cancel} = timer:cancel(State1#state.timer),
-    {ok, Timer} = timer:send_after(State1#state.interval, reschedule),
-    {noreply, State1#state{timer = Timer}};
+handle_info(reschedule, State) ->
+    ok = reschedule(State),
+    {ok, cancel} = timer:cancel(State#state.timer),
+    {ok, Timer} = timer:send_after(State#state.interval, reschedule),
+    {noreply, State#state{timer = Timer}};
 
 handle_info({'DOWN', _Ref, process, Pid, Reason}, State) ->
     case job_by_pid(Pid) of
@@ -287,7 +287,7 @@ update_history(History0) when is_list(History0) ->
     lists:sublist(History1, ?MAX_HISTORY).
 
 
--spec reschedule(#state{}) -> #state{}.
+-spec reschedule(#state{}) -> ok.
 reschedule(State) ->
     Max = State#state.max_jobs,
     Running = running_job_count(),
@@ -300,4 +300,4 @@ reschedule(State) ->
         Running < Max andalso Pending > 0 ->
             start_jobs(Max - Running)
     end,
-    State.
+    ok.
