@@ -278,11 +278,11 @@ reschedule(State) ->
     Running = running_job_count(),
     Pending = pending_job_count(),
     if
-        Running == Max ->
-            ok;
         Running > Max ->
             stop_jobs(Running - Max);
         Running < Max andalso Pending > 0 ->
-            start_jobs(Max - Running)
+            start_jobs(Max - Running);
+        true ->
+            ok
     end,
     ok.
