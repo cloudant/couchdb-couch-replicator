@@ -18,7 +18,7 @@
 -include("couch_scheduler.hrl").
 
 %% public api
--export([start_link/0, add_job/3, remove_job/1]).
+-export([start_link/0, add_job/3, remove_job/2]).
 
 %% gen_server callbacks
 -export([init/1, terminate/2, code_change/3]).
@@ -52,16 +52,16 @@ start_link() ->
 add_job(Module, Id, Args) when is_atom(Module), Id /= undefined ->
     Job = #job{
         module = Module,
-        id = Id,
+        id = {Module, Id},
         args = Args,
         started_at = {0, 0, 0},
         stopped_at = {0, 0, 0}},
     gen_server:call(?MODULE, {add_job, Job}).
 
 
--spec remove_job(job_id()) -> ok.
-remove_job(Id) ->
-    gen_server:call(?MODULE, {remove_job, Id}).
+-spec remove_job(module(), job_id()) -> ok.
+remove_job(Module, Id) ->
+    gen_server:call(?MODULE, {remove_job, Module, Id}).
 
 
 %% gen_server functions
@@ -83,13 +83,13 @@ handle_call({add_job, Job}, _From, State) ->
             {reply, {error, already_added}, State}
     end;
 
-handle_call({remove_job, Id}, _From, State) ->
-    case job_by_id(Id) of
+handle_call({remove_job, Module, Id}, _From, State) ->
+    case job_by_id(Module, Id) of
         {ok, Job} ->
             ok = stop_job_int(Job),
             true = remove_job_int(Job),
             {reply, ok, State};
-        undefined ->
+        {error, not_found} ->
             {reply, ok, State}
     end;
 
@@ -262,9 +262,9 @@ job_by_pid(Pid) when is_pid(Pid) ->
             {ok, Job}
     end.
 
--spec job_by_id(job_id()) -> {ok, #job{}} | {error, not_found}.
-job_by_id(Id) ->
-    case ets:lookup(?MODULE, Id) of
+-spec job_by_id(module(), job_id()) -> {ok, #job{}} | {error, not_found}.
+job_by_id(Module, Id) ->
+    case ets:lookup(?MODULE, {Module, Id}) of
         [] ->
             {error, not_found};
         [#job{}=Job] ->
