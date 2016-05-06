@@ -130,7 +130,7 @@ handle_info({'DOWN', _Ref, process, Pid, Reason}, State) ->
         {ok, #job{}=Job0} ->
             couch_log:notice("~p: Job ~p died with reason: ~p",
                              [?MODULE, Job0#job.id, Reason]),
-            Job1 = Job0#job{pid = undefined},
+            Job1 = update_history(Job0#job{pid = undefined}, crashed, os:timestamp()),
             true = ets:insert(?MODULE, Job1),
             start_pending_jobs(State#state.max_jobs),
             {noreply, State};
