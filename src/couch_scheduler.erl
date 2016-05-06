@@ -276,15 +276,26 @@ job_by_id(Module, Id) ->
 reschedule(Max) when is_integer(Max), Max > 0 ->
     Running = running_job_count(),
     Pending = pending_job_count(),
-    if
-        Running > Max ->
-            stop_jobs(Running - Max);
-        Running < Max andalso Pending > 0 ->
-            start_jobs(Max - Running);
-        Pending > 0 ->
-            stop_jobs(erlang:min(Pending, Running)),
-            start_jobs(erlang:min(Pending, Running));
-        Pending == 0 ->
-            ok
-    end,
+    stop_excess_jobs(Max, Running),
+    start_pending_jobs(Max, Running, Pending),
+    rotate_jobs(Max, Running, Pending).
+
+
+stop_excess_jobs(Max, Running) when Running > Max ->
+    stop_jobs(Running - Max);
+
+stop_excess_jobs(_, _) ->
+    ok.
+
+start_pending_jobs(Max, Running, Pending) when Running < Max, Pending > 0 ->
+    start_jobs(Max - Running);
+
+start_pending_jobs(_, _, _) ->
+    ok.
+
+rotate_jobs(Max, Running, Pending) when Running == Max, Pending > 0 ->
+    stop_jobs(erlang:min(Pending, Running)),
+    start_jobs(erlang:min(Pending, Running));
+
+rotate_jobs(_, _, _) ->
     ok.
