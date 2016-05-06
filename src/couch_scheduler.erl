@@ -78,6 +78,7 @@ init(_) ->
 handle_call({add_job, Job}, _From, State) ->
     case add_job_int(Job) of
         true ->
+            start_pending_jobs(State#state.max_jobs),
             {reply, ok, State};
         false ->
             {reply, {error, already_added}, State}
@@ -122,6 +123,7 @@ handle_info({'DOWN', _Ref, process, Pid, Reason}, State) ->
                              [?MODULE, Job0#job.id, Reason]),
             Job1 = Job0#job{pid = undefined},
             true = ets:insert(?MODULE, Job1),
+            start_pending_jobs(State#state.max_jobs),
             {noreply, State};
         {error, not_found} ->
             % removed in remove_job and should not be reinserted.
@@ -286,6 +288,11 @@ stop_excess_jobs(Max, Running) when Running > Max ->
 
 stop_excess_jobs(_, _) ->
     ok.
+
+
+start_pending_jobs(Max) ->
+    start_pending_jobs(Max, running_job_count(), pending_job_count()).
+
 
 start_pending_jobs(Max, Running, Pending) when Running < Max, Pending > 0 ->
     start_jobs(Max - Running);
