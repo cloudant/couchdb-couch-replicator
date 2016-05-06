@@ -28,7 +28,13 @@
 %% config_listener callback
 -export([handle_config_change/5, handle_config_terminate/3]).
 
+%% types
+-type event_type() :: started | stopped | crashed.
+-type event() :: {Type:: event_type(), When :: erlang:timestamp()}.
+-type history() :: [Events :: event()].
+
 %% definitions
+-define(MAX_HISTORY, 20).
 -define(DEFAULT_MAX_JOBS, 100).
 -define(DEFAULT_MAX_CHURN, 20).
 -define(DEFAULT_SCHEDULER_INTERVAL, 60000).
@@ -38,9 +44,7 @@
           id :: job_id(),
           args :: job_args(),
           pid :: pid(),
-          started_at :: erlang:timestamp(),
-          stopped_at :: erlang:timestamp()}).
-
+          history :: history()}).
 
 %% public functions
 
@@ -55,8 +59,7 @@ add_job(Module, Id, Args) when is_atom(Module), Id /= undefined ->
         module = Module,
         id = {Module, Id},
         args = Args,
-        started_at = {0, 0, 0},
-        stopped_at = {0, 0, 0}},
+        history = []},
     gen_server:call(?MODULE, {add_job, Job}).
 
 
@@ -199,7 +202,7 @@ stop_jobs(Count) ->
 
 
 oldest_job_first(#job{} = A, #job{} = B) ->
-    A#job.started_at =< B#job.started_at.
+    last_started(A) =< last_started(B).
 
 
 -spec add_job_int(#job{}) -> boolean().
@@ -216,7 +219,7 @@ start_job_int(#job{} = Job0) ->
         {ok, Child} ->
             monitor(process, Child),
             started = gen_server:call(Child, start),
-            Job1 = Job0#job{pid = Child, started_at = os:timestamp()},
+            Job1 = update_history(Job0#job{pid = Child}, started, os:timestamp()),
             true = ets:insert(?MODULE, Job1),
             couch_log:notice("~p: Job ~p started as ~p",
                 [?MODULE, Job1#job.id, Job1#job.pid]);
@@ -232,7 +235,7 @@ stop_job_int(#job{pid = undefined}) ->
 
 stop_job_int(#job{} = Job0) ->
     stopped = gen_server:call(Job0#job.pid, stop),
-    Job1 = Job0#job{pid = undefined, stopped_at = os:timestamp()},
+    Job1 = update_history(Job0#job{pid = undefined}, stopped, os:timestamp()),
     true = ets:insert(?MODULE, Job1),
     couch_log:notice("~p: Job ~p stopped as ~p",
         [?MODULE, Job0#job.id, Job0#job.pid]),
@@ -321,3 +324,21 @@ rotate_jobs(_, _, _, _) ->
 
 min(List) ->
     hd(lists:sort(List)).
+
+
+-spec last_started(#job{}) -> erlang:timestamp().
+last_started(#job{} = Job) ->
+    Starts = [E || {started, _} = E <- Job#job.history],
+    case Starts of
+        [] ->
+            {0, 0, 0};
+        [{started, When} | _] ->
+            When
+    end.
+
+
+-spec update_history(#job{}, event_type(), erlang:timestamp()) -> #job{}.
+update_history(Job, Type, When) ->
+    History0 = [{Type, When} | Job#job.history],
+    History1 = lists:sublist(History0, ?MAX_HISTORY),
+    Job#job{history = History1}.
