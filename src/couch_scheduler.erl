@@ -30,8 +30,9 @@
 
 %% definitions
 -define(DEFAULT_MAX_JOBS, 100).
+-define(DEFAULT_MAX_CHURN, 20).
 -define(DEFAULT_SCHEDULER_INTERVAL, 60000).
--record(state, {interval, timer, max_jobs}).
+-record(state, {interval, timer, max_jobs, max_churn}).
 -record(job, {
           module :: module(),
           id :: job_id(),
@@ -71,8 +72,9 @@ init(_) ->
     ok = config:listen_for_changes(?MODULE, self()),
     Interval = config:get_integer("replicator", "interval", ?DEFAULT_SCHEDULER_INTERVAL),
     MaxJobs = config:get_integer("replicator", "max_jobs", ?DEFAULT_MAX_JOBS),
+    MaxChurn = config:get_integer("replicator", "max_churn", ?DEFAULT_MAX_CHURN),
     {ok, Timer} = timer:send_after(Interval, reschedule),
-    {ok, #state{interval = Interval, max_jobs = MaxJobs, timer = Timer}}.
+    {ok, #state{interval = Interval, max_jobs = MaxJobs, max_churn = MaxChurn, timer = Timer}}.
 
 
 handle_call({add_job, Job}, _From, State) ->
@@ -102,6 +104,10 @@ handle_cast({set_max_jobs, MaxJobs}, State) when is_integer(MaxJobs), MaxJobs > 
     couch_log:notice("~p: max_jobs set to ~B", [?MODULE, MaxJobs]),
     {noreply, State#state{max_jobs = MaxJobs}};
 
+handle_cast({set_max_churn, MaxChurn}, State) when is_integer(MaxChurn), MaxChurn > 0 ->
+    couch_log:notice("~p: max_churn set to ~B", [?MODULE, MaxChurn]),
+    {noreply, State#state{max_churn = MaxChurn}};
+
 handle_cast({set_interval, Interval}, State) when is_integer(Interval), Interval > 0 ->
     couch_log:notice("~p: interval set to ~B", [?MODULE, Interval]),
     {noreply, State#state{interval = Interval}};
@@ -111,7 +117,7 @@ handle_cast(_, State) ->
 
 
 handle_info(reschedule, State) ->
-    ok = reschedule(State#state.max_jobs),
+    ok = reschedule(State#state.max_jobs, State#state.max_churn),
     {ok, cancel} = timer:cancel(State#state.timer),
     {ok, Timer} = timer:send_after(State#state.interval, reschedule),
     {noreply, State#state{timer = Timer}};
@@ -152,6 +158,10 @@ format_status(_Opt, [_PDict, State]) ->
 
 handle_config_change("replicator", "max_jobs", V, _, Pid) ->
     ok = gen_server:cast(Pid, {set_max_jobs, list_to_integer(V)}),
+    {ok, Pid};
+
+handle_config_change("replicator", "max_churn", V, _, Pid) ->
+    ok = gen_server:cast(Pid, {set_max_churn, list_to_integer(V)}),
     {ok, Pid};
 
 handle_config_change("replicator", "interval", V, _, Pid) ->
@@ -274,13 +284,14 @@ job_by_id(Module, Id) ->
     end.
 
 
--spec reschedule(Max :: non_neg_integer()) -> ok.
-reschedule(Max) when is_integer(Max), Max > 0 ->
+-spec reschedule(MaxJobs :: non_neg_integer(), MaxChurn :: non_neg_integer()) -> ok.
+reschedule(MaxJobs, MaxChurn)
+  when is_integer(MaxJobs), MaxJobs > 0, is_integer(MaxChurn), MaxChurn > 0 ->
     Running = running_job_count(),
     Pending = pending_job_count(),
-    stop_excess_jobs(Max, Running),
-    start_pending_jobs(Max, Running, Pending),
-    rotate_jobs(Max, Running, Pending).
+    stop_excess_jobs(MaxJobs, Running),
+    start_pending_jobs(MaxJobs, Running, Pending),
+    rotate_jobs(MaxJobs, MaxChurn, Running, Pending).
 
 
 stop_excess_jobs(Max, Running) when Running > Max ->
@@ -300,9 +311,13 @@ start_pending_jobs(Max, Running, Pending) when Running < Max, Pending > 0 ->
 start_pending_jobs(_, _, _) ->
     ok.
 
-rotate_jobs(Max, Running, Pending) when Running == Max, Pending > 0 ->
-    stop_jobs(erlang:min(Pending, Running)),
-    start_jobs(erlang:min(Pending, Running));
+rotate_jobs(MaxJobs, MaxChurn, Running, Pending) when Running == MaxJobs, Pending > 0 ->
+    stop_jobs(min([Pending, Running, MaxChurn])),
+    start_jobs(min([Pending, Running, MaxChurn]));
 
-rotate_jobs(_, _, _) ->
+rotate_jobs(_, _, _, _) ->
     ok.
+
+
+min(List) ->
+    hd(lists:sort(List)).
