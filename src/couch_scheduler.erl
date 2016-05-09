@@ -35,6 +35,8 @@
 
 %% definitions
 -define(MAX_HISTORY, 20).
+-define(MINIMUM_CRASH_INTERVAL, 60 * 1000000).
+
 -define(DEFAULT_MAX_JOBS, 100).
 -define(DEFAULT_MAX_CHURN, 20).
 -define(DEFAULT_SCHEDULER_INTERVAL, 60000).
@@ -190,8 +192,9 @@ handle_config_terminate(Self, _, _) ->
 start_jobs(Count) ->
     Runnable0 = pending_jobs(),
     Runnable1 = lists:sort(fun oldest_job_first/2, Runnable0),
-    Runnable2 = lists:sublist(Runnable1, Count),
-    lists:foreach(fun start_job_int/1, Runnable2).
+    Runnable2 = lists:filter(fun not_recently_crashed/1, Runnable1),
+    Runnable3 = lists:sublist(Runnable2, Count),
+    lists:foreach(fun start_job_int/1, Runnable3).
 
 
 stop_jobs(Count) ->
@@ -203,6 +206,20 @@ stop_jobs(Count) ->
 
 oldest_job_first(#job{} = A, #job{} = B) ->
     last_started(A) =< last_started(B).
+
+
+not_recently_crashed(#job{} = Job) ->
+    case crash_history(Job) of
+        [] ->
+            true;
+        [{crashed, When} | _] ->
+            timer:now_diff(os:timestamp(), When)
+                >= ?MINIMUM_CRASH_INTERVAL
+    end.
+
+
+crash_history(#job{} = Job) ->
+    [Crash || {crashed, _When} = Crash <- Job#job.history].
 
 
 -spec add_job_int(#job{}) -> boolean().
