@@ -13,18 +13,22 @@
 -module(couch_replicator_job).
 -behaviour(couch_scheduler_job).
 
+-include("couch_replicator.hrl").
+
 %% couch_scheduler_job api
 -export([init/2, start/3, stop/3]).
 
 %% couch_scheduler_job functions
 
-init(Id, Args) ->
-    {ok, init}.
+init(Id, _) ->
+    {ok, undefined}.
 
 
-start(Id, Args, State) ->
-    {ok, start}.
+start(Id, Rep, undefined) ->
+    {ok, spawn_link(couch_replicator, replicate, [Rep])}.
 
 
-stop(Id, Args, State) ->
-    {ok, stop}.
+stop(Id, _Rep, Pid) ->
+    erlang:unlink(Pid),
+    exit(Pid, shutdown),
+    {ok, undefined}.
