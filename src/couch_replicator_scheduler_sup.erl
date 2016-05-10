@@ -14,10 +14,29 @@
 -behaviour(supervisor).
 -vsn(1).
 
--export([start_link/0, init/1]).
+%% includes
+-include("couch_replicator.hrl").
+
+%% public api
+-export([start_link/0, start_child/1, terminate_child/1]).
+
+%% supervisor api
+-export([init/1]).
+
+%% public functions
 
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
+
+
+start_child(#rep{} = Rep) ->
+    supervisor:start_child(?MODULE, [Rep]).
+
+
+terminate_child(Pid) ->
+    supervisor:terminate_child(?MODULE, Pid).
+
+%% supervisor functions
 
 init(_Args) ->
     Start = {couch_replicator_scheduler_job, start_link, []},
