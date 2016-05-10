@@ -10,11 +10,11 @@
 % License for the specific language governing permissions and limitations under
 % the License.
 
--module(couch_scheduler_job).
+-module(couch_replicator_scheduler_job).
 -behaviour(gen_server).
 -vsn(1).
 
--include("couch_scheduler.hrl").
+-include("couch_replicator_scheduler.hrl").
 
 %% public api
 -export([start_link/3]).

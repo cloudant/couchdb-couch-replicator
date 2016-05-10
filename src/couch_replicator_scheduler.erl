@@ -10,12 +10,12 @@
 % License for the specific language governing permissions and limitations under
 % the License.
 
--module(couch_scheduler).
+-module(couch_replicator_scheduler).
 -behaviour(gen_server).
 -behaviour(config_listener).
 -vsn(1).
 
--include("couch_scheduler.hrl").
+-include("couch_replicator_scheduler.hrl").
 
 %% public api
 -export([start_link/0, add_job/3, remove_job/2]).
@@ -232,7 +232,7 @@ start_job_int(#job{pid = Pid}) when Pid /= undefined ->
 
 start_job_int(#job{} = Job0) ->
     Args = [Job0#job.module, Job0#job.id, Job0#job.args],
-    case supervisor:start_child(couch_scheduler_sup, Args) of
+    case supervisor:start_child(couch_replicator_scheduler_sup, Args) of
         {ok, Child} ->
             monitor(process, Child),
             started = gen_server:call(Child, start),
@@ -256,7 +256,7 @@ stop_job_int(#job{} = Job0) ->
     true = ets:insert(?MODULE, Job1),
     couch_log:notice("~p: Job ~p stopped as ~p",
         [?MODULE, Job0#job.id, Job0#job.pid]),
-    supervisor:terminate_child(couch_scheduler_sup, Job0#job.pid).
+    supervisor:terminate_child(couch_replicator_scheduler_sup, Job0#job.pid).
 
 
 -spec remove_job_int(#job{}) -> true.

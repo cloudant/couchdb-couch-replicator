@@ -10,7 +10,7 @@
 % License for the specific language governing permissions and limitations under
 % the License.
 
--module(couch_scheduler_sup).
+-module(couch_replicator_scheduler_sup).
 -behaviour(supervisor).
 -vsn(1).
 
@@ -20,11 +20,11 @@ start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 init(_Args) ->
-    Start = {couch_scheduler_job, start_link, []},
+    Start = {couch_replicator_scheduler_job, start_link, []},
     Restart = temporary, % A crashed job is not entitled to immediate restart.
     Shutdown = 5000,
     Type = worker,
-    Modules = [couch_scheduler_job],
+    Modules = [couch_replicator_scheduler_job],
 
     RestartStrategy = simple_one_for_one,
     MaxR = 10,
