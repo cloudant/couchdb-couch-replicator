@@ -15,64 +15,65 @@
 -vsn(1).
 
 -include("couch_replicator_scheduler.hrl").
+-include("couch_replicator.hrl").
 
 %% public api
--export([start_link/3]).
+-export([start_link/1]).
 
 %% gen_server callbacks
 -export([init/1, terminate/2, code_change/3]).
 -export([handle_call/3, handle_cast/2, handle_info/2]).
 
--callback init(Id :: job_id(), Args :: job_args()) ->
-    {ok, State :: term()}.
-
--callback start(Id :: job_id(), Args :: job_args(), State :: term()) ->
-    {ok, NewState :: term()}.
-
--callback stop(Id :: job_id(), Args :: job_args(), State :: term()) ->
-    {ok, NewState :: term()}.
-
 %% definitions
--record(state, {module, id, args, job_state}).
+-define(LOWEST_SEQ, 0).
+-define(DEFAULT_CHECKPOINT_INTERVAL, 30000).
+-record(rep_state, {
+    rep_details,
+    source_name,
+    target_name,
+    source,
+    target,
+    history,
+    checkpoint_history,
+    start_seq,
+    committed_seq,
+    current_through_seq,
+    seqs_in_progress = [],
+    highest_seq_done = {0, ?LOWEST_SEQ},
+    source_log,
+    target_log,
+    rep_starttime,
+    src_starttime,
+    tgt_starttime,
+    timer, % checkpoint timer
+    changes_queue,
+    changes_manager,
+    changes_reader,
+    workers,
+    stats = couch_replicator_stats:new(),
+    session_id,
+    source_db_compaction_notifier = nil,
+    target_db_compaction_notifier = nil,
+    source_monitor = nil,
+    target_monitor = nil,
+    source_seq = nil,
+    use_checkpoints = true,
+    checkpoint_interval = ?DEFAULT_CHECKPOINT_INTERVAL,
+    type = db,
+    view = nil
+}).
 
-start_link(Module, Id, Args) ->
+start_link(#rep{} = Rep) ->
     gen_server:start_link(
-      {global, {Module, Id}},
+      {global, {?MODULE, Rep#rep.id}},
       ?MODULE,
-      {Module, Id, Args},
+      Rep,
       []).
 
 
-init({Module, Id, Args}) ->
-    {ok, JobState} = Module:init(Id, Args),
-    State = #state{
-        module = Module,
-        id = Id,
-        args = Args,
-        job_state = JobState
-    },
-    {ok, State}.
+init(#rep{} = Rep) ->
+    {ok, #rep_state{rep_details = Rep}}.
 
-
-handle_call(start, _From, State0) ->
-    #state{
-        module = Module,
-        id = Id,
-        args = Args,
-        job_state = JobState0} = State0,
-    {ok, JobState1} = Module:start(Id, Args, JobState0),
-    State1 = State0#state{job_state=JobState1},
-    {reply, started, State1};
-
-handle_call(stop, _From, State0) ->
-    #state{
-        module = Module,
-        id = Id,
-        args = Args,
-        job_state = JobState0} = State0,
-    {ok, JobState1} = Module:stop(Id, Args, JobState0),
-    State1 = State0#state{job_state=JobState1},
-    {reply, stopped, State1};
 
 handle_call(_Msg, _From, State) ->
     {noreply, State}.
