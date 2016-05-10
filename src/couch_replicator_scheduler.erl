@@ -16,10 +16,9 @@
 -vsn(1).
 
 -include("couch_replicator_scheduler.hrl").
--include("couch_replicator.hrl").
 
 %% public api
--export([start_link/0, add_job/1, remove_job/1]).
+-export([start_link/0, add_job/3, remove_job/2]).
 
 %% gen_server callbacks
 -export([init/1, terminate/2, code_change/3]).
@@ -43,8 +42,9 @@
 -define(DEFAULT_SCHEDULER_INTERVAL, 60000).
 -record(state, {interval, timer, max_jobs, max_churn}).
 -record(job, {
+          module :: module(),
           id :: job_id(),
-          rep :: #rep{},
+          args :: job_args(),
           pid :: pid(),
           history :: history()}).
 
@@ -55,18 +55,19 @@ start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 
--spec add_job(#rep{}) -> ok | {error, already_added}.
-add_job(#rep{} = Rep) when Rep#rep.id /= undefined ->
+-spec add_job(module(), job_id(), job_args()) -> ok | {error, already_added}.
+add_job(Module, Id, Args) when is_atom(Module), Id /= undefined ->
     Job = #job{
-        id = Rep#rep.id,
-        rep = Rep,
+        module = Module,
+        id = {Module, Id},
+        args = Args,
         history = []},
     gen_server:call(?MODULE, {add_job, Job}).
 
 
--spec remove_job(job_id()) -> ok.
-remove_job(Id) ->
-    gen_server:call(?MODULE, {remove_job, Id}).
+-spec remove_job(module(), job_id()) -> ok.
+remove_job(Module, Id) ->
+    gen_server:call(?MODULE, {remove_job, Module, Id}).
 
 
 %% gen_server functions
@@ -90,8 +91,8 @@ handle_call({add_job, Job}, _From, State) ->
             {reply, {error, already_added}, State}
     end;
 
-handle_call({remove_job, Id}, _From, State) ->
-    case job_by_id(Id) of
+handle_call({remove_job, Module, Id}, _From, State) ->
+    case job_by_id(Module, Id) of
         {ok, Job} ->
             ok = stop_job_int(Job),
             true = remove_job_int(Job),
@@ -230,9 +231,11 @@ start_job_int(#job{pid = Pid}) when Pid /= undefined ->
     ok;
 
 start_job_int(#job{} = Job0) ->
-    case couch_replicator_scheduler_sup:start_child(Job0#job.rep) of
+    Args = [Job0#job.module, Job0#job.id, Job0#job.args],
+    case supervisor:start_child(couch_replicator_scheduler_sup, Args) of
         {ok, Child} ->
             monitor(process, Child),
+            started = gen_server:call(Child, start),
             Job1 = update_history(Job0#job{pid = Child}, started, os:timestamp()),
             true = ets:insert(?MODULE, Job1),
             couch_log:notice("~p: Job ~p started as ~p",
@@ -248,11 +251,12 @@ stop_job_int(#job{pid = undefined}) ->
     ok;
 
 stop_job_int(#job{} = Job0) ->
-    ok = couch_replicator_scheduler_sup:terminate_child(Job0#job.pid),
+    stopped = gen_server:call(Job0#job.pid, stop),
     Job1 = update_history(Job0#job{pid = undefined}, stopped, os:timestamp()),
     true = ets:insert(?MODULE, Job1),
     couch_log:notice("~p: Job ~p stopped as ~p",
-        [?MODULE, Job0#job.id, Job0#job.pid]).
+        [?MODULE, Job0#job.id, Job0#job.pid]),
+    supervisor:terminate_child(couch_replicator_scheduler_sup, Job0#job.pid).
 
 
 -spec remove_job_int(#job{}) -> true.
@@ -290,9 +294,9 @@ job_by_pid(Pid) when is_pid(Pid) ->
             {ok, Job}
     end.
 
--spec job_by_id(job_id()) -> {ok, #job{}} | {error, not_found}.
-job_by_id(Id) ->
-    case ets:lookup(?MODULE, Id) of
+-spec job_by_id(module(), job_id()) -> {ok, #job{}} | {error, not_found}.
+job_by_id(Module, Id) ->
+    case ets:lookup(?MODULE, {Module, Id}) of
         [] ->
             {error, not_found};
         [#job{}=Job] ->
