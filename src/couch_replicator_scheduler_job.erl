@@ -72,6 +72,7 @@ start_link(#rep{} = Rep) ->
 
 
 init(#rep{} = Rep) ->
+    process_flag(trap_exit, true),
     {ok, #rep_state{rep_details = Rep}}.
 
 
@@ -91,5 +92,15 @@ code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
 
+terminate(shutdown, State) ->
+   couch_log:notice("~p asked to shutdown", [id(State)]);
+
 terminate(_Reason, _State) ->
     ok.
+
+
+id(#rep{} = Rep) ->
+    Rep#rep.id;
+
+id(#rep_state{} = RepState) ->
+    id(RepState#rep_state.rep_details).
