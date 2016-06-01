@@ -29,26 +29,17 @@
 %% config_listener callback
 -export([handle_config_change/5, handle_config_terminate/3]).
 
-%% types
--type event_type() :: started | stopped | crashed.
--type event() :: {Type:: event_type(), When :: erlang:timestamp()}.
--type history() :: [Events :: event()].
-
 %% definitions
--define(MAX_HISTORY, 20).
--define(MINIMUM_CRASH_INTERVAL, 60 * 1000000).
-
 -define(DEFAULT_MAX_JOBS, 100).
 -define(DEFAULT_MAX_CHURN, 20).
 -define(DEFAULT_SCHEDULER_INTERVAL, 60000).
 -define(ERROR_RETRY_MILLISECONDS, 30000).
--record(state, {interval, max_jobs, max_churn}).
+-record(state, {interval, max_jobs, churn, churn_time, max_churn}).
 
 -record(job, {
     id :: job_id(),
     rep :: #rep{},
     pid :: pid(),
-    history :: history(),
     state :: runnable | running | stopping | stopped | {error, term()},
     started_at :: erlang:timestamp(),
     stopped_at :: erlang:timestamp(),
@@ -70,7 +61,6 @@ add_job(#rep{} = Rep) when Rep#rep.id /= undefined ->
     Job = #job{
         id = Rep#rep.id,
         rep = Rep,
-        history = []},
         state = runnable,
         started_at = {0, 0, 0},
         stopped_at = {0, 0, 0},
@@ -96,7 +86,7 @@ init(_) ->
     Interval = config:get_integer("replicator", "interval", ?DEFAULT_SCHEDULER_INTERVAL),
     MaxJobs = config:get_integer("replicator", "max_jobs", ?DEFAULT_MAX_JOBS),
     MaxChurn = config:get_integer("replicator", "max_churn", ?DEFAULT_MAX_CHURN),
-    {ok, #state{interval = Interval, max_jobs = MaxJobs, max_churn = MaxChurn}}.
+    {ok, #state{interval = Interval, max_jobs = MaxJobs, churn = 0, churn_time = now(), max_churn = MaxChurn}}.
 
 
 handle_call({add_job, Job}, _From, State) ->
@@ -138,17 +128,16 @@ handle_cast(_, State) ->
 
 handle_info({'DOWN', _Ref, process, Pid, Reason}, State) ->
     case job_by_pid(Pid) of
-        {ok, #job{}=Job0} ->
+        {ok, #job{}=Job} ->
             case Reason of
                 normal ->
-                    job_runnable(Job0);
+                    job_runnable(Job);
                 {error, EReason} ->
-                    Job1 = update_history(Job0, crashed, os:timestamp()),
-                    true = ets:insert(?MODULE, Job1),
-                    job_error(Job1, EReason)
+                    true = ets:insert(?MODULE, Job),
+                    job_error(Job, EReason)
             end,
             couch_log:notice("~p: Job ~p died with reason: ~p",
-                             [?MODULE, Job0#job.id, Reason]),
+                             [?MODULE, Job#job.id, Reason]),
             format_timeout({noreply, State});
         {error, not_found} ->
             % removed in remove_job and should not be reinserted.
@@ -214,32 +203,30 @@ add_job_int(#job{} = Job) ->
     end.
 
 
-
 job_running(#job{state=runnable} = Job0) ->
     case couch_replicator_scheduler_sup:start_child(Job0#job.rep) of
         {ok, Child} ->
             StartedAt = os:timestamp(),
             monitor(process, Child),
             gen_server:cast(Child, start),
-            NewJob = Job#job{
+            Job1 = Job0#job{
                 pid = Child,
                 errored_at = undefined,
                 error_retries = 0,
                 started_at = StartedAt,
                 state=running
             },
-            true = ets:insert(?MODULE, NewJob),
-            true = ets:insert(couch_scheduler_running, {{StartedAt, Job#job.id}}),
-            true = ets:delete(couch_scheduler_runnable, {Job#job.stopped_at, Job#job.id}),
+            true = ets:insert(?MODULE, Job1),
+            true = ets:insert(couch_scheduler_running, {{StartedAt, Job1#job.id}}),
+            true = ets:delete(couch_scheduler_runnable, {Job1#job.stopped_at, Job1#job.id}),
             couch_log:notice("~p: Job ~p started as ~p",
-                [?MODULE, NewJob#job.id, NewJob#job.pid]),
-            NewJob;
+                [?MODULE, Job1#job.id, Job1#job.pid]),
+            Job1;
         {error, Reason} ->
             couch_log:notice("~p: Job ~p failed to start for reason ~p",
-                [?MODULE, Job, Reason]),
-            job_error(Job, Reason)
+                [?MODULE, Job0, Reason]),
+            job_error(Job0, Reason)
     end.
-
 
 
 job_runnable(#job{state=running} = Job0) ->
@@ -247,45 +234,44 @@ job_runnable(#job{state=running} = Job0) ->
     gen_server:cast(Job0#job.pid, stop),
     supervisor:terminate_child(couch_scheduler_sup, Job0#job.pid),
     Job1 = Job0#job{pid = undefined, stopped_at = StoppedAt, state=runnable},
-    Job2 = update_history(Job1, stopped, os:timestamp()),
-    ets:insert(?MODULE, Job2),
-    true = ets:insert(?MODULE, Job2),
-    true = ets:delete(couch_scheduler_running, {Job2#job.started_at, Job2#job.id}),
-    true = ets:insert(couch_scheduler_runnable, {{StoppedAt, Job2#job.id}}),
+    ets:insert(?MODULE, Job1),
+    true = ets:insert(?MODULE, Job1),
+    true = ets:delete(couch_scheduler_running, {Job1#job.started_at, Job1#job.id}),
+    true = ets:insert(couch_scheduler_runnable, {{StoppedAt, Job1#job.id}}),
     couch_log:notice("~p: Job ~p stopped as ~p",
-        [?MODULE, Job2#job.id, Job2#job.pid]),
-    Job2;
+        [?MODULE, Job1#job.id, Job1#job.pid]),
+    Job1;
 
-job_runnable(#job{state={error, _Reason}} = Job) ->
-    ets:delete(couch_scheduler_timeout_box, {Job#job.timeout_until, Job#job.id}),
-    NewJob = Job#job{state=runnable},
-    ets:insert(?MODULE, NewJob),
-    NewJob.
+job_runnable(#job{state={error, _Reason}} = Job0) ->
+    ets:delete(couch_scheduler_timeout_box, {Job0#job.timeout_until, Job0#job.id}),
+    Job1 = Job0#job{state=runnable},
+    ets:insert(?MODULE, Job1),
+    Job1.
 
-job_error(#job{state=running} = Job, Reason) ->
-    ErroredAt = case Job#job.errored_at of
+job_error(#job{state=running} = Job0, Reason) ->
+    ErroredAt = case Job0#job.errored_at of
         undefined ->
             os:timestamp();
         Other ->
             Other
     end,
-    Errors = Job#job.error_retries+1,
+    Errors = Job0#job.error_retries+1,
     TimeoutTimestamp = timer_offset(ErroredAt, Errors*?ERROR_RETRY_MILLISECONDS),
-    case Job#job.pid of
+    case Job0#job.pid of
         undefined ->
             ok;
         _ ->
-            gen_server:cast(Job#job.pid, stop)
+            gen_server:cast(Job0#job.pid, stop)
     end,
-    NewJob = Job#job{
+    Job1 = Job0#job{
         error_retries=Errors,
         errored_at=ErroredAt,
         timeout_until=TimeoutTimestamp,
         state={error, Reason}
     },
-    ets:insert(couch_scheduler_timeout_box, {{TimeoutTimestamp, Job#job.id}}),
-    ets:insert(?MODULE, NewJob),
-    NewJob.
+    ets:insert(couch_scheduler_timeout_box, {{TimeoutTimestamp, Job1#job.id}}),
+    ets:insert(?MODULE, Job1),
+    Job1.
 
 job_remove(Job) ->
     #job{
@@ -343,27 +329,21 @@ job_by_id(Id) ->
     end.
 
 
--spec update_history(#job{}, event_type(), erlang:timestamp()) -> #job{}.
-update_history(Job, Type, When) ->
-    History0 = [{Type, When} | Job#job.history],
-    History1 = lists:sublist(History0, ?MAX_HISTORY),
-    Job#job{history = History1}.
-
-
 format_timeout(Return) ->
     State = element(tuple_size(Return), Return),
-    Timeout = case next_rescheduling_timeout() of
-        Timeout0 when Timeout0 > 0 ->
-            Timeout0;
-        _Timeout0 ->
-            reschedule(State#state.max_jobs),
-            next_rescheduling_timeout()
+    #state{max_jobs=MaxJobs, churn=Churn, max_churn=MaxChurn} = State,
+    {NewChurn, NewTimeout} = case next_rescheduling_timeout() of
+        Timeout when Timeout > 0 ->
+            {0, Timeout};
+        _Timeout ->
+            JobsRescheduled = reschedule(MaxJobs, Churn, MaxChurn),
+            {JobsRescheduled + Churn, next_rescheduling_timeout()}
     end,
     case Return of
         {Reply, _State} ->
-            {Reply, State, Timeout};
+            {Reply, State#state{churn=NewChurn}, NewTimeout};
         {Reply, Message, _State} ->
-            {Reply, Message, State, Timeout}
+            {Reply, Message, State, NewTimeout}
     end.
 
 
@@ -371,15 +351,17 @@ next_rescheduling_timeout() ->
     Now = os:timestamp(),
     {TimeoutBoxTS, _TID} = ets:first(couch_scheduler_timeout_box),
     {RunningJobTS, _RID} = ets:first(couch_scheduler_running),
-    Min = min(timer:now_diff(TimeoutBoxTS, Now), timer:now_diff(RunningJobTS, Now)) div 1000,
+    Min = lists:min(timer:now_diff(TimeoutBoxTS, Now), timer:now_diff(RunningJobTS, Now)) div 1000,
     max(Min, 0).
 
 
-reschedule(MaxJobs) ->
+-spec reschedule(integer(), integer(), integer()) -> integer().
+reschedule(MaxJobs, Churn, MaxChurn) ->
     expire_timeout_box(),
     stop_excess_jobs(MaxJobs),
-    stop_old_jobs(),
-    start_runnable_jobs(MaxJobs).
+    JobsStarted = start_runnable_jobs(lists:min([MaxJobs, MaxChurn - Churn, runnable_job_count()])),
+    JobsRotated = rotate_old_jobs(lists:min([MaxJobs, MaxChurn - Churn - JobsStarted, runnable_job_count()])),
+    JobsStarted + JobsRotated.
 
 
 expire_timeout_box() ->
@@ -412,14 +394,15 @@ stop_excess_jobs_int(RunningJobCount, MaxJobs) ->
             ok
     end.
 
-stop_old_jobs() ->
-    RunnableJobCount = runnable_job_count(),
-    stop_old_jobs_int(RunnableJobCount, 0).
+% Rotate at most MaxJobsToRotate
+-spec rotate_old_jobs(integer()) -> integer().
+rotate_old_jobs(MaxJobsToRotate) ->
+    rotate_old_jobs_int(MaxJobsToRotate, 0).
 
-stop_old_jobs_int(JobsStopped, JobsStopped) ->
-    ok;
+rotate_old_jobs_int(JobsRotated, JobsRotated) ->
+    JobsRotated;
 
-stop_old_jobs_int(RunnableJobCount, JobsStopped) ->
+rotate_old_jobs_int(MaxJobsToRotate, JobsRotated) ->
     case ets:first(couch_scheduler_running) of
         {Timestamp, JobID} ->
             case timer:now_diff(Timestamp, os:timestamp()) < 0 of
@@ -427,30 +410,37 @@ stop_old_jobs_int(RunnableJobCount, JobsStopped) ->
                     {ok, Job} = job_by_id(JobID),
                     job_runnable(Job),
                     start_runnable_job(),
-                    stop_old_jobs_int(RunnableJobCount, JobsStopped+1);
+                    rotate_old_jobs_int(MaxJobsToRotate, JobsRotated+1);
                 false ->
-                    ok
+                    JobsRotated
             end;
         '$end_of_table' ->
-            ok
+            JobsRotated
     end.
 
+-spec start_runnable_jobs(integer()) -> integer().
 start_runnable_jobs(MaxJobs) ->
     RunningJobCount = running_job_count(),
-    start_runnable_jobs_int(RunningJobCount, MaxJobs).
-
-
-start_runnable_jobs_int(RunningJobCount, MaxJobs) when RunningJobCount >= MaxJobs ->
-    ok;
-
-start_runnable_jobs_int(RunningJobCount, MaxJobs) ->
-    case start_runnable_job() of
-        false ->
-            ok;
-        {ok, _Job} ->
-            start_runnable_jobs_int(RunningJobCount+1, MaxJobs)
+    case MaxJobs - RunningJobCount of
+        JobsToStart when JobsToStart < 0 ->
+            % Already too many jobs running
+            0;
+        JobsToStart ->
+            start_runnable_jobs_int(0, JobsToStart)
     end.
 
+start_runnable_jobs_int(JobsStarted, JobsStarted) ->
+    JobsStarted;
+
+start_runnable_jobs_int(JobsStarted, JobsToStart) ->
+    case start_runnable_job() of
+        false ->
+            JobsStarted;
+        {ok, _Job} ->
+            start_runnable_jobs_int(JobsStarted+1, JobsToStart)
+    end.
+
+-spec start_runnable_job() -> false | {ok, #job{}}.
 start_runnable_job() ->
     case ets:first(couch_scheduler_runnable) of
         '$end_of_table' ->
