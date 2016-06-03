@@ -233,9 +233,6 @@ clean_mailbox(_, Count) when Count > 0 ->
     ok.
 
 
-maybe_retry(Error, Worker, #httpdb{retries = 0} = HttpDb, Params) ->
-    report_error(Worker, HttpDb, Params, {error, Error});
-
 %% For 429 errors, we perform an exponential backoff up to 250 * 2^15
 %% times, or roughly 2.17 hours. Since the #httpd.retries is initialized
 %% to 10 and we need 15, we use the Wait time as a timeout/failure end.
@@ -253,6 +250,9 @@ maybe_retry(backoff, Worker, #httpdb{wait = Wait} = HttpDb, Params) ->
             NewHttpDb = HttpDb#httpdb{wait = NewWait},
             throw({retry, NewHttpDb, Params})
     end;
+
+maybe_retry(Error, Worker, #httpdb{retries = 0} = HttpDb, Params) ->
+    report_error(Worker, HttpDb, Params, {error, Error});
 
 maybe_retry(Error, _Worker, #httpdb{retries = Retries, wait = Wait} = HttpDb,
     Params) ->
