@@ -269,7 +269,7 @@ maybe_retry(Error, _Worker, #httpdb{retries = Retries, wait = Wait} = HttpDb,
 log_retry_error(Params, HttpDb, Wait, Error) ->
     Method = string:to_upper(atom_to_list(get_value(method, Params, get))),
     Url = couch_util:url_strip_password(full_url(HttpDb, Params)),
-    couch_log:notice("Retrying ~s request to ~s in ~p seconds due to error ~s",
+    twig:log(notice, "Retrying ~s request to ~s in ~p seconds due to error ~s",
         [Method, Url, Wait / 1000, error_cause(Error)]).
 
 
