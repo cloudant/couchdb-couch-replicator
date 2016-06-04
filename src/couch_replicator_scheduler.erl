@@ -35,7 +35,8 @@
 -type history() :: [Events :: event()].
 
 %% definitions
--define(MINIMUM_CRASH_INTERVAL, 60 * 1000000).
+-define(MAX_BACKOFF_EXPONENT, 10).
+-define(BACKOFF_INTERVAL_MICROS, 30 * 1000 * 1000).
 
 -define(DEFAULT_MAX_JOBS, 100).
 -define(DEFAULT_MAX_CHURN, 20).
@@ -242,12 +243,16 @@ oldest_job_first(#job{} = A, #job{} = B) ->
 
 
 not_recently_crashed(#job{} = Job) ->
-    case crash_history(Job) of
+    case Job#job.history of
         [] ->
             true;
+        [{stopped, _When} | _] ->
+            true;
         [{crashed, When} | _] ->
-            timer:now_diff(os:timestamp(), When)
-                >= ?MINIMUM_CRASH_INTERVAL
+            Crashes = crash_history(Job),
+            BackoffExp = erlang:min(length(Crashes) - 1, ?MAX_BACKOFF_EXPONENT),
+            BackoffInterval = (1 bsl BackoffExp) * ?BACKOFF_INTERVAL_MICROS,
+            timer:now_diff(os:timestamp(), When) >= BackoffInterval
     end.
 
 
