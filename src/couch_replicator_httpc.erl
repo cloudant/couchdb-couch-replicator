@@ -239,15 +239,16 @@ clean_mailbox(_, Count) when Count > 0 ->
 maybe_retry(backoff, Worker, #httpdb{wait = Wait} = HttpDb, Params) ->
     ok = timer:sleep(random:uniform(Wait)),
     Wait2 = Wait*2,
+    NewWait = erlang:min(Wait2, ?MAX_BACKOFF_WAIT),
+    NewHttpDb = HttpDb#httpdb{wait = NewWait},
     case Wait2 of
         W0 when W0 >= ?MAX_BACKOFF_LOG_THRESHOLD -> % Past 8 min, we log retries
-            log_retry_error(Params, HttpDb, Wait, "429 Retry");
+            log_retry_error(Params, HttpDb, Wait2, "429 Retry"),
+            throw({retry, NewHttpDb, Params});
         W1 when W1 > ?MAX_BACKOFF_WAIT ->
             report_error(Worker, HttpDb, Params, {error,
                 "429 Retry Timeout"});
         _ ->
-            NewWait = erlang:min(Wait2, ?MAX_BACKOFF_WAIT),
-            NewHttpDb = HttpDb#httpdb{wait = NewWait},
             throw({retry, NewHttpDb, Params})
     end;
 
