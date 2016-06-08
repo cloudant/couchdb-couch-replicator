@@ -35,13 +35,13 @@
 -type history() :: [Events :: event()].
 
 %% definitions
--define(MAX_HISTORY, 20).
 -define(MINIMUM_CRASH_INTERVAL, 60 * 1000000).
 
 -define(DEFAULT_MAX_JOBS, 100).
 -define(DEFAULT_MAX_CHURN, 20).
 -define(DEFAULT_SCHEDULER_INTERVAL, 60000).
--record(state, {interval, timer, max_jobs, max_churn}).
+-define(DEFAULT_MAX_HISTORY, 20).
+-record(state, {interval, timer, max_jobs, max_churn, max_history}).
 -record(job, {
           id :: job_id(),
           rep :: #rep{},
@@ -83,8 +83,14 @@ init(_) ->
     Interval = config:get_integer("replicator", "interval", ?DEFAULT_SCHEDULER_INTERVAL),
     MaxJobs = config:get_integer("replicator", "max_jobs", ?DEFAULT_MAX_JOBS),
     MaxChurn = config:get_integer("replicator", "max_churn", ?DEFAULT_MAX_CHURN),
+    MaxHistory = config:get_integer("replicator", "max_history", ?DEFAULT_MAX_HISTORY),
     {ok, Timer} = timer:send_after(Interval, reschedule),
-    {ok, #state{interval = Interval, max_jobs = MaxJobs, max_churn = MaxChurn, timer = Timer}}.
+    {ok, #state{
+        interval = Interval,
+        max_jobs = MaxJobs,
+        max_churn = MaxChurn,
+        max_history = MaxHistory,
+        timer = Timer}}.
 
 
 handle_call({add_job, Job}, _From, State) ->
@@ -130,6 +136,10 @@ handle_cast({set_max_churn, MaxChurn}, State) when is_integer(MaxChurn), MaxChur
 handle_cast({set_interval, Interval}, State) when is_integer(Interval), Interval > 0 ->
     couch_log:notice("~p: interval set to ~B", [?MODULE, Interval]),
     {noreply, State#state{interval = Interval}};
+
+handle_cast({set_max_history, MaxHistory}, State) when is_integer(MaxHistory), MaxHistory > 0 ->
+    couch_log:notice("~p: max_history set to ~B", [?MODULE, MaxHistory]),
+    {noreply, State#state{max_history = MaxHistory}};
 
 handle_cast(_, State) ->
     {noreply, State}.
@@ -188,6 +198,10 @@ handle_config_change("replicator", "max_churn", V, _, Pid) ->
 
 handle_config_change("replicator", "interval", V, _, Pid) ->
     ok = gen_server:cast(Pid, {set_interval, list_to_integer(V)}),
+    {ok, Pid};
+
+handle_config_change("replicator", "max_history", V, _, Pid) ->
+    ok = gen_server:cast(Pid, {set_max_history, list_to_integer(V)}),
     {ok, Pid};
 
 handle_config_change(_, _, _, _, Pid) ->
@@ -377,5 +391,5 @@ last_started(#job{} = Job) ->
 -spec update_history(#state{}, #job{}, event_type(), erlang:timestamp()) -> #job{}.
 update_history(State, Job, Type, When) ->
     History0 = [{Type, When} | Job#job.history],
-    History1 = lists:sublist(History0, ?MAX_HISTORY),
+    History1 = lists:sublist(History0, State#state.max_history),
     Job#job{history = History1}.
