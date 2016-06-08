@@ -90,12 +90,7 @@ init(_) ->
 handle_call({add_job, Job}, _From, State) ->
     case add_job_int(Job) of
         true ->
-            case running_job_count() of
-                RunningJobs when RunningJobs < State#state.max_jobs ->
-                    start_job_int(Job);
-                _ ->
-                    ok
-                end,
+            ok = maybe_start_job(Job, State),
             {reply, ok, State};
         false ->
             {reply, {error, already_added}, State}
@@ -242,6 +237,15 @@ crash_history(#job{} = Job) ->
 add_job_int(#job{} = Job) ->
     ets:insert_new(?MODULE, Job).
 
+-spec maybe_start_job(#job{}, #state{}) -> ok.
+maybe_start_job(#job{} = Job, #state{max_jobs = MaxJobs}) ->
+    case running_job_count() of
+        RunningJobs when RunningJobs < MaxJobs ->
+            start_job_int(Job),
+            ok;
+        _ ->
+            ok
+    end.
 
 start_job_int(#job{pid = Pid}) when Pid /= undefined ->
     ok;
