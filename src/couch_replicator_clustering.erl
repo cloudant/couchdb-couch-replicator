@@ -103,6 +103,10 @@ init([]) ->
     }}.
 
 
+terminate(_Reason, _State) ->
+    ok.
+
+
 handle_call(is_stable, _From, State) ->
     {reply, is_stable(State), State}.
 
@@ -142,10 +146,6 @@ handle_info(stability_check, State) ->
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
-
-
-terminate(_Reason, _State) ->
-    ok.
 
 
 %% Internal functions

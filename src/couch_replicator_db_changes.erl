@@ -42,6 +42,10 @@ init([]) ->
     end.
 
 
+terminate(_Reason, _State) ->
+    ok.
+
+
 handle_call(_Msg, _From, State) ->
     {noreply, State}.
 
@@ -55,10 +59,6 @@ handle_cast({cluster, stable}, State) ->
 
 handle_info(_Msg, State) ->
     {noreply, State}.
-
-
-terminate(_Reason, _State) ->
-    ok.
 
 
 code_change(_OldVsn, State, _Extra) ->

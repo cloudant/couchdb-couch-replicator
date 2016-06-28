@@ -88,6 +88,10 @@ init([DbSuffix, Module, Context, Opts]) ->
     }}.
 
 
+terminate(_Reason, _State) ->
+    ok.
+
+
 handle_call({change, DbName, Change}, _From,
     #state{skip_ddocs=SkipDDocs, mod=Mod, ctx=Ctx} = State) ->
     case {SkipDDocs, is_design_doc(Change)} of
@@ -177,8 +181,6 @@ handle_info({'EXIT', From, Reason}, #state{pids = Pids} = State) ->
             {stop, {unexpected_exit, From, Reason}, State}
     end.
 
-terminate(_Reason, _State) ->
-    ok.
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
