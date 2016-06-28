@@ -47,7 +47,7 @@ terminate(_Reason, _State) ->
 
 
 handle_call(_Msg, _From, State) ->
-    {noreply, State}.
+    {reply, {error, invalid_call}, State}.
 
 
 handle_cast({cluster, unstable}, State) ->
