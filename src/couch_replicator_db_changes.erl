@@ -99,5 +99,3 @@ start_link_cluster_event_listener() ->
         end,
     {ok, Pid} = couch_replicator_notifier:start_link(CallbackFun),
     Pid.
-
-
