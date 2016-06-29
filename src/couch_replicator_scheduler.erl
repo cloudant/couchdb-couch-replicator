@@ -352,7 +352,10 @@ stop_job_int(#job{pid = undefined}, _State) ->
     ok;
 
 stop_job_int(#job{} = Job, State) ->
+    T0 = os:timestamp(),
     ok = couch_replicator_scheduler_sup:terminate_child(Job#job.pid),
+    DtSec = (timer:now_diff(os:timestamp(), T0)) / 1000000,
+    couch_log:notice("~p terminate child took ~.3f seconds ", [?MODULE, DtSec]),
     demonitor(Job#job.monitor, [flush]),
     ok = update_state_stopped(Job, State),
     couch_log:notice("~p: Job ~p stopped as ~p",
