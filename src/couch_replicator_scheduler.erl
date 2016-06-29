@@ -73,11 +73,16 @@ start_link() ->
 
 -spec add_job(#rep{}) -> ok | {error, already_added}.
 add_job(#rep{} = Rep) when Rep#rep.id /= undefined ->
-    Job = #job{
-        id = Rep#rep.id,
-        rep = Rep,
-        history = [{added, os:timestamp()}]},
-    gen_server:call(?MODULE, {add_job, Job}).
+    case is_continuous(Rep) of
+        true ->
+            couch_replicator_scheduler_sup:start_child(Rep);
+        false ->
+            Job = #job{
+                id = Rep#rep.id,
+                rep = Rep,
+                history = [{added, os:timestamp()}]},
+            gen_server:call(?MODULE, {add_job, Job})
+    end.
 
 
 -spec remove_job(job_id()) -> ok.
@@ -603,6 +608,8 @@ jobs() ->
         ]} | Acc]
     end, [], couch_replicator_scheduler).
 
+is_continuous(#rep{} = Rep) ->
+    couch_util:get_value(continuous, Rep#rep.options, false).
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
@@ -660,6 +667,10 @@ oldest_job_first_test() ->
     ?assertEqual([J1, J2], Sort([J2, J1])),
     ?assertEqual([J0, J1, J2], Sort([J2, J1, J0])).
 
+is_continuous_test() ->
+    ?assert(is_continuous(#rep{options=[{continuous, true}]})),
+    ?assertNot(is_continuous(#rep{options=[{continuous, false}]})),
+    ?assertNot(is_continuous(#rep{options=[]})).
 
 % Test helper functions
 
