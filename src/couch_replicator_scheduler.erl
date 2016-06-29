@@ -366,22 +366,30 @@ remove_job_int(#job{} = Job) ->
 
 -spec running_job_count() -> non_neg_integer().
 running_job_count() ->
-    ets:info(?MODULE, size) - pending_job_count().
+    ets:select_count(?MODULE, [{running_job_spec(), [], [true]}]).
 
 
 -spec running_jobs() -> [#job{}].
 running_jobs() ->
-    ets:select(?MODULE, [{#job{pid = '$1', _='_'}, [{is_pid, '$1'}], ['$_']}]).
+    ets:select(?MODULE, [running_job_spec()]).
+
+
+running_job_spec() ->
+    {#job{pid='$1', _='_'}, [{is_pid, '$1'}], ['$_']}.
 
 
 -spec pending_job_count() -> non_neg_integer().
 pending_job_count() ->
-    ets:select_count(?MODULE, [{#job{pid=undefined, _='_'}, [], [true]}]).
+    ets:select_count(?MODULE, [{pending_job_spec(), [], [true]}]).
 
 
 -spec pending_jobs() -> [#job{}].
 pending_jobs() ->
-    ets:match_object(?MODULE, #job{pid=undefined, _='_'}).
+    ets:match_object(?MODULE, pending_job_spec()).
+
+
+pending_job_spec() ->
+    #job{pid=undefined, _='_'}.
 
 
 -spec job_by_pid(pid()) -> {ok, #job{}} | {error, not_found}.
