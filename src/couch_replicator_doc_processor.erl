@@ -39,14 +39,14 @@
 
 
 -record(rdoc, {
-    id :: db_doc_id(),
-    state :: repstate(),
-    rep :: #rep{} | nil,
-    rid :: rep_id() | nil,
-    filter :: filter_type(),
-    info :: binary() | nil,
-    errcnt :: non_neg_integer(),
-    worker :: reference() | nil
+    id :: db_doc_id() | '_' | {any(), '_'},
+    state :: repstate() | '_',
+    rep :: #rep{} | nil | '_',
+    rid :: rep_id() | nil | '_',
+    filter :: filter_type() | '_',
+    info :: binary() | nil | '_',
+    errcnt :: non_neg_integer() | '_',
+    worker :: reference() | nil | '_'
 }).
 
 
