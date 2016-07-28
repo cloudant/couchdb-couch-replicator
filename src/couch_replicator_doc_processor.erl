@@ -186,7 +186,7 @@ handle_info({'DOWN', Ref, _, _, #doc_worker_result{id = Id, result = Res}},
     ok = worker_returned(Ref, Id, Res),
     {noreply, State};
 
-handle_info(Msg, State) ->
+handle_info(_Msg, State) ->
     {noreply, State}.
 
 
