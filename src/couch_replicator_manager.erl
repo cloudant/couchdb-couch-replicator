@@ -439,11 +439,16 @@ handle_db_event(_DbName, _Event, Server) ->
     {ok, Server}.
 
 rescan(#state{scan_pid = nil} = State) ->
-    true = ets:delete_all_objects(?DB_TO_SEQ),
-    Server = self(),
-    Epoch = make_ref(),
-    NewScanPid = spawn_link(fun() -> scan_all_dbs(Server) end),
-    State#state{scan_pid = NewScanPid, epoch = Epoch};
+    case cloudant_util:upgrade_in_progress() of
+        true ->
+            State;
+        false ->
+            true = ets:delete_all_objects(?DB_TO_SEQ),
+            Server = self(),
+            Epoch = make_ref(),
+            NewScanPid = spawn_link(fun() -> scan_all_dbs(Server) end),
+            State#state{scan_pid = NewScanPid, epoch = Epoch}
+    end;
 rescan(#state{scan_pid = ScanPid} = State) ->
     unlink(ScanPid),
     exit(ScanPid, exit),
