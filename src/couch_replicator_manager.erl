@@ -89,7 +89,6 @@ replication_started(#rep{id = {BaseId, _} = RepId}) ->
     #rep_state{rep = #rep{db_name = DbName, doc_id = DocId}} ->
         update_rep_doc(DbName, DocId, [
             {<<"_replication_state">>, <<"triggered">>},
-            {<<"_replication_state_reason">>, undefined},
             {<<"_replication_id">>, ?l2b(BaseId)},
             {<<"_replication_stats">>, undefined}]),
         ok = gen_server:call(?MODULE, {rep_started, RepId}, infinity),
@@ -704,7 +703,27 @@ update_rep_doc(RepDbName, RepDocId, KVs, Wait) when is_binary(RepDocId) ->
             update_rep_doc(RepDbName, RepDocId, KVs, Wait * 2)
     end;
 update_rep_doc(RepDbName, #doc{body = {RepDocBody}} = RepDoc, KVs, _Try) ->
-    NewRepDocBody = lists:foldl(
+    PrevError = get_json_value(<<"_replication_state_reason">>, RepDocBody),
+    CurrentError = get_json_value(<<"_replication_state_reason">>, KVs),
+    case CurrentError =/= undefined andalso CurrentError =:= PrevError of
+        true ->
+            % Shortcut repeated errors of the same type from continously
+            % updating replication doc. In case when error reason exists and it
+            % is the same as previous error reason, don't update document.
+            ok;
+        false ->
+            case update_rep_doc_body(RepDocBody, KVs) of
+                RepDocBody ->
+                    ok;
+                NewRepDocBody ->
+                    % Might not succeed - when the replication doc is deleted
+                    % right before this update (not an error, ignore).
+                    save_rep_doc(RepDbName, RepDoc#doc{body = {NewRepDocBody}})
+                end
+    end.
+
+update_rep_doc_body(RepDocBody, KVs) ->
+    lists:foldl(
         fun({K, undefined}, Body) ->
                 lists:keydelete(K, 1, Body);
            ({<<"_replication_state">> = K, State} = KV, Body) ->
@@ -720,15 +739,7 @@ update_rep_doc(RepDbName, #doc{body = {RepDocBody}} = RepDoc, KVs, _Try) ->
             ({K, _V} = KV, Body) ->
                 lists:keystore(K, 1, Body, KV)
         end,
-        RepDocBody, KVs),
-    case NewRepDocBody of
-    RepDocBody ->
-        ok;
-    _ ->
-        % Might not succeed - when the replication doc is deleted right
-        % before this update (not an error, ignore).
-        save_rep_doc(RepDbName, RepDoc#doc{body = {NewRepDocBody}})
-    end.
+        RepDocBody, KVs).
 
 open_rep_doc(DbName, DocId) ->
     case couch_db:open_int(DbName, [?CTX, sys_db]) of
@@ -1035,6 +1046,137 @@ t_fail_non_replicator_shard() ->
         ?assertEqual([], replicator_shards(DbName)),
         fabric:delete_db(DbName, [?CTX])
     end).
+
+
+-define(REPDOC, <<"repdoc">>).
+-define(DBNAME, <<"couch_replication_manager_update_eunit_db">>).
+
+update_rep_doc_test_() ->
+{
+      foreach, fun setup/0, fun teardown/1,
+      [
+          t_should_update_new_doc(),
+          t_triggered_should_not_erase_error_reason(),
+          t_should_not_update_if_reason_has_not_changed(),
+          t_should_update_if_reason_has_changed()
+      ]
+}.
+
+
+t_should_update_new_doc() ->
+    ?_test(begin
+        update_doc([]),
+        update_rep_doc(?DBNAME, ?REPDOC, [
+            {<<"_replication_state">>, <<"triggered">>},
+            {<<"_replication_id">>, <<"1">>},
+            {<<"_replication_stats">>, undefined}
+        ]),
+        {_Rev, State, Reason} = rev_state_reason(),
+        ?assertEqual(<<"triggered">>, State),
+        ?assertEqual(undefined, Reason)
+    end).
+
+
+ t_triggered_should_not_erase_error_reason() ->
+    ?_test(begin
+        update_doc([{<<"_replication_state_reason">>, <<"snakes">>}]),
+        update_rep_doc(?DBNAME, ?REPDOC, [
+            {<<"_replication_state">>, <<"triggered">>},
+            {<<"_replication_id">>, <<"1">>},
+            {<<"_replication_stats">>, undefined}
+        ]),
+        {_Rev, State, Reason} = rev_state_reason(),
+        ?assertEqual(<<"triggered">>, State),
+        ?assertEqual(<<"snakes">>, Reason)
+    end).
+
+
+t_should_not_update_if_reason_has_not_changed() ->
+    ?_test(begin
+        update_doc([
+            {<<"_replication_state_reason">>, <<"snakes">>},
+            {<<"_replication_state">>, <<"triggered">>}
+        ]),
+        {Rev1, State1, Reason1} = rev_state_reason(),
+        ?assertEqual(<<"triggered">>, State1),
+        ?assertEqual(<<"snakes">>, Reason1),
+        update_rep_doc(?DBNAME, ?REPDOC, [
+            {<<"_replication_state">>, <<"triggered">>},
+            {<<"_replication_state_reason">>, <<"snakes">>}
+        ]),
+        {Rev2, _State2, _Reason2} = rev_state_reason(),
+        ?assertEqual(Rev1, Rev2)
+    end).
+
+
+t_should_update_if_reason_has_changed() ->
+    ?_test(begin
+        update_doc([
+            {<<"_replication_state_reason">>, <<"snakes">>},
+            {<<"_replication_state">>, <<"triggered">>}
+        ]),
+        {Rev1, State1, Reason1} = rev_state_reason(),
+        ?assertEqual(<<"triggered">>, State1),
+        ?assertEqual(<<"snakes">>, Reason1),
+        update_rep_doc(?DBNAME, ?REPDOC, [
+            {<<"_replication_state">>, <<"triggered">>},
+            {<<"_replication_state_reason">>, <<"cats">>}
+        ]),
+        {Rev2, _State, Reason2} = rev_state_reason(),
+        ?assertNotEqual(Rev1, Rev2),
+        ?assertEqual(<<"cats">>, Reason2)
+    end).
+
+
+setup() ->
+    Ctx = test_util:start_couch(),
+    delete_db(),
+    ok = create_db(),
+    Ctx.
+
+
+teardown(Ctx) ->
+    delete_db(),
+    ok = test_util:stop_couch(Ctx).
+
+
+create_db() ->
+    DbName = ?DBNAME,
+    {ok, Db} = couch_db:create(DbName, [?ADMIN_CTX]),
+    ok = couch_db:close(Db),
+    ok.
+
+
+update_doc(Props) ->
+    {ok, Db} = couch_db:open(?DBNAME, [?ADMIN_CTX]),
+    Props1 = lists:keystore(<<"_id">>, 1, Props, {<<"_id">>, ?REPDOC}),
+    Doc = couch_doc:from_json_obj({Props1}),
+    try
+        {ok, _} = couch_db:update_doc(Db, Doc, []),
+        couch_db:ensure_full_commit(Db)
+    after
+        couch_db:close(Db)
+    end.
+
+
+read_doc() ->
+    {ok, Db} = couch_db:open_int(?DBNAME, [?ADMIN_CTX]),
+    {ok, Doc} = couch_db:open_doc(Db, ?REPDOC, []),
+    {Props} = couch_doc:to_json_obj(Doc, []),
+    ok = couch_db:close(Db),
+    Props.
+
+
+rev_state_reason() ->
+    Props = read_doc(),
+    Rev = get_json_value(<<"_rev">>, Props),
+    State = get_json_value(<<"_replication_state">>, Props),
+    Reason = get_json_value(<<"_replication_state_reason">>, Props),
+    {Rev, State, Reason}.
+
+
+delete_db() ->
+    couch_server:delete(?DBNAME, [?ADMIN_CTX]).
 
 
 -endif.
