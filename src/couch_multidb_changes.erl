@@ -21,6 +21,7 @@
 -export([changes_reader/3, changes_reader_cb/3]).
 
 -include_lib("couch/include/couch_db.hrl").
+-include_lib("mem3/include/mem3.hrl").
 
 -define(CTX, {user_ctx, #user_ctx{roles=[<<"_admin">>, <<"_replicator">>]}}).
 
@@ -249,34 +250,44 @@ changes_reader_cb(_, _, Acc) ->
 
 
 scan_all_dbs(Server, DbSuffix) when is_pid(Server) ->
-    Root = config:get("couchdb", "database_dir", "."),
-    NormRoot = couch_util:normpath(Root),
-    Pat = io_lib:format("~s(\\.[0-9]{10,})?.couch$", [DbSuffix]),
-    filelib:fold_files(Root, lists:flatten(Pat), true,
-        fun(Filename, Acc) ->
-            % shamelessly stolen from couch_server.erl
-            NormFilename = couch_util:normpath(Filename),
-            case NormFilename -- NormRoot of
-                [$/ | RelativeFilename] -> ok;
-                RelativeFilename -> ok
-            end,
-            DbName = ?l2b(filename:rootname(RelativeFilename, ".couch")),
-            Jitter = jitter(Acc),
-            spawn_link(fun() ->
-                timer:sleep(Jitter),
-                gen_server:cast(Server, {resume_scan, DbName})
-            end),
-            Acc + 1
-        end, 1).
+    ok = scan_local_db(Server, DbSuffix),
+    {ok, Db} = mem3_util:ensure_exists(
+        config:get("mem3", "shard_db", "dbs")),
+    ChangesFun = couch_changes:handle_changes(#changes_args{}, nil, Db, nil),
+    ChangesFun(fun({change, {Change}, _}, _) ->
+        DbName = couch_util:get_value(<<"id">>, Change),
+        case DbName of <<"_design/", _/binary>> -> ok; _Else ->
+            case couch_replicator_utils:is_deleted(Change) of
+            true ->
+                ok;
+            false ->
+                [gen_server:cast(Server, {resume_scan, ShardName})
+                    || ShardName <- filter_shards(DbName, DbSuffix)],
+                ok
+            end
+        end;
+        (_, _) -> ok
+    end),
+    couch_db:close(Db).
 
 
-% calculate random delay proportional to the number of replications
-% on current node, in order to prevent a stampede:
-%   - when a source with multiple replication targets fails
-%   - when we restart couch_replication_manager
-jitter(N) ->
-    Range = min(2 * N * ?AVG_DELAY_MSEC, ?MAX_DELAY_MSEC),
-    random:uniform(Range).
+filter_shards(DbName, DbSuffix) ->
+    case DbSuffix =:= couch_db:dbname_suffix(DbName) of
+    false ->
+        [];
+    true ->
+        [ShardName || #shard{name = ShardName} <- mem3:local_shards(DbName)]
+    end.
+
+
+scan_local_db(Server, DbSuffix) when is_pid(Server) ->
+    case couch_db:open_int(DbSuffix, [?CTX, sys_db, nologifmissing]) of
+        {ok, Db} ->
+            gen_server:cast(Server, {resume_scan, DbSuffix}),
+            ok = couch_db:close(Db);
+        _Error ->
+            ok
+    end.
 
 
 is_design_doc({Change}) ->
@@ -661,6 +672,70 @@ t_misc_gen_server_callbacks() ->
     ?_test(begin
         ?assertEqual(ok, terminate(reason, state)),
         ?assertEqual({ok, state}, code_change(old, state, extra))
+    end).
+
+
+scan_dbs_test_() ->
+{
+      foreach,
+      fun() -> test_util:start_couch([mem3, fabric]) end,
+      fun(Ctx) -> test_util:stop_couch(Ctx) end,
+      [
+          t_pass_shard(),
+          t_fail_shard(),
+          t_pass_local(),
+          t_fail_local()
+     ]
+}.
+
+
+t_pass_shard() ->
+    ?_test(begin
+        DbName0 = ?tempdb(),
+        DbSuffix = <<"_replicator">>,
+        DbName = <<DbName0/binary, "/", DbSuffix/binary>>,
+        ok = fabric:create_db(DbName, [?CTX]),
+        ?assertEqual(8, length(filter_shards(DbName, DbSuffix))),
+        fabric:delete_db(DbName, [?CTX])
+    end).
+
+
+t_fail_shard() ->
+    ?_test(begin
+        DbName = ?tempdb(),
+        ok = fabric:create_db(DbName, [?CTX]),
+        ?assertEqual([], filter_shards(DbName, <<"_replicator">>)),
+        fabric:delete_db(DbName, [?CTX])
+    end).
+
+
+t_pass_local() ->
+    ?_test(begin
+        LocalDb = ?tempdb(),
+        {ok, Db} = couch_db:create(LocalDb, [?CTX]),
+        ok = couch_db:close(Db),
+        scan_local_db(self(), LocalDb),
+        receive
+            {'$gen_cast', Msg} ->
+                ?assertEqual(Msg, {resume_scan, LocalDb})
+        after 0 ->
+                ?assert(false)
+        end
+    end).
+
+
+t_fail_local() ->
+ ?_test(begin
+        LocalDb = ?tempdb(),
+        {ok, Db} = couch_db:create(LocalDb, [?CTX]),
+        ok = couch_db:close(Db),
+        scan_local_db(self(), <<"some_other_db">>),
+        receive
+            {'$gen_cast', Msg} ->
+                ?assertNotEqual(Msg, {resume_scan, LocalDb})
+        after 0 ->
+                ?assert(true)
+        end
     end).
 
 
