@@ -313,6 +313,10 @@ handle_info({'EXIT', From, Reason}, #state{rep_start_pids = Pids} = State) ->
                 [{DbName, _EndSeq, true}] ->
                     handle_cast({resume_scan, DbName}, NewState);
                 _ ->
+                    spawn(fun() ->
+                        timer:sleep(10000),
+                        couch_server:close_sys_db_if_idle(DbName)
+                    end),
                     {noreply, NewState}
             end;
         false when Reason == normal ->
