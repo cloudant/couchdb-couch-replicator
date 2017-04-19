@@ -32,7 +32,7 @@ teardown(_, {Ctx, {Source, Target}}) ->
     ok = test_util:stop_couch(Ctx).
 
 
-id_too_long_replication_test_() ->
+id_too_long_replication_test_DISABLED() ->
     Pairs = [{local, local}, {local, remote},
              {remote, local}, {remote, remote}],
     {
