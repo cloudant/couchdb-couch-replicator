@@ -108,7 +108,7 @@ check_active_tasks(RepPid, {BaseId, Ext} = _RepId, Src, Tgt) ->
     FullRepId = ?l2b(BaseId ++ Ext),
     Pid = ?l2b(pid_to_list(RepPid)),
     ok = wait_for_replicator(RepPid),
-    [RepTask] = couch_task_status:all(),
+    [RepTask] = replication_tasks(),
     ?assertEqual(Pid, couch_util:get_value(pid, RepTask)),
     ?assertEqual(FullRepId, couch_util:get_value(replication_id, RepTask)),
     ?assertEqual(true, couch_util:get_value(continuous, RepTask)),
@@ -123,6 +123,11 @@ check_active_tasks(RepPid, {BaseId, Ext} = _RepId, Src, Tgt) ->
     ?assert(is_integer(couch_util:get_value(source_seq, RepTask))),
     Pending = couch_util:get_value(changes_pending, RepTask),
     ?assert(is_integer(Pending)).
+
+replication_tasks() ->
+    lists:filter(fun(P) ->
+        couch_util:get_value(type, P) =:= replication
+    end, couch_task_status:all()).
 
 wait_for_replicator(Pid) ->
     %% since replicator started asynchronously
